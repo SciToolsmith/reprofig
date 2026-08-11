@@ -5,6 +5,8 @@ Score each action independently. The effective level is the highest level across
 ## R0 — automatic read-only
 
 - read supplied paper and images;
+- interpret figure semantics, panels, visual encodings, and the figure's role in the paper's evidence chain;
+- reconstruct an explicit input-to-figure generation chain, derive candidate routes, and define scientific validation targets;
 - inspect local source text;
 - search public metadata and source pages;
 - query versions, package lists, licenses, hardware, and free disk;
@@ -32,7 +34,7 @@ Do not modify a global environment, overwrite user files, or run a full reproduc
 - compatibility patch that may change scientific semantics;
 - overwriting existing outputs.
 
-Present a decision card with action, reason, source, license, download size, disk use, estimated runtime, cost, risks, rollback, and recommended alternative.
+Present a decision card with action, reason, source, license, download size, disk use, estimated runtime, cost, risks, rollback, recommended alternative, affected generation-chain links, and the scientific claim that would remain testable.
 
 ## R3 — user-held authority and itemized approval
 
@@ -58,6 +60,8 @@ Block:
 ## Scientific route gate
 
 Treat a change among `direct-recompute`, `mechanism-reproduction`, `alternative-validation`, `editable-reconstruction`, and `original-case-blocked` as a material plan change. Never downgrade silently. State what the new route can and cannot support, then request a new approval.
+
+Approval authorizes actions and scope; it does not establish scientific validity. Scientific support is determined only by execution evidence evaluated against the predefined validation criteria.
 
 ## Default budget
 

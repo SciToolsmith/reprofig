@@ -13,8 +13,9 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
+from build_report import MAX_ASSET_BYTES
 from build_report import ReportError as ReportValidationError
-from build_report import validate_report
+from build_report import sha256_file, validate_report, validate_sanitized_png
 
 
 class GateError(ValueError):
@@ -109,8 +110,30 @@ def main() -> int:
         approval = json.loads(args.approval.read_text(encoding="utf-8"))
         require(isinstance(report, dict), "report must be an object")
         require(isinstance(approval, dict), "approval must be an object")
-        validate_report(report)
-        require(report.get("schemaVersion") == "reprofig.report/v1", "unsupported report schema")
+        schema_version = report.get("schemaVersion")
+        require(
+            schema_version == "reprofig.report/v2",
+            "unsupported report schema; legacy reprofig.report/v1 reports must be regenerated before approval",
+        )
+        validate_report(report, allow_built_assets=True)
+        report_root = args.report.parent.resolve()
+        for figure in report.get("figures", []):
+            image = figure.get("image", {})
+            relative_path = image.get("relativePath")
+            if relative_path is None:
+                continue
+            candidate = args.report.parent / relative_path
+            require(not candidate.is_symlink(), f"{figure['figureId']}: built image cannot be a symlink")
+            resolved = candidate.resolve()
+            try:
+                resolved.relative_to(report_root)
+            except ValueError as exc:
+                raise GateError(f"{figure['figureId']}: built image escapes the report directory") from exc
+            require(resolved.is_file(), f"{figure['figureId']}: built image is missing")
+            require(resolved.stat().st_size <= MAX_ASSET_BYTES, f"{figure['figureId']}: built image exceeds the size limit")
+            require(resolved.stat().st_size == image.get("sizeBytes"), f"{figure['figureId']}: built image size mismatch")
+            require(sha256_file(resolved) == image.get("sha256"), f"{figure['figureId']}: built image hash mismatch")
+            validate_sanitized_png(resolved)
         require(approval.get("schemaVersion") == "reprofig.approval/v1", "unsupported approval schema")
 
         allowed_root = {
@@ -183,8 +206,47 @@ def main() -> int:
             require(route_id in routes, f"{figure_id}: unknown route")
             route = routes[route_id]
             require(route.get("status") != "blocked", f"{figure_id}: blocked route cannot be approved")
+            require(not route.get("blockers"), f"{figure_id}: a route with blockers cannot be approved")
+            requirements = {item["requirementId"]: item for item in figure.get("requirements", [])}
+            referenced_requirement_states = set()
+            for requirement_id in route.get("requirementIds", []):
+                requirement = requirements.get(requirement_id)
+                require(requirement is not None, f"{figure_id}: unknown route requirement")
+                require(requirement.get("blocking") is not True, f"{figure_id}: route references a blocking requirement")
+                referenced_requirement_states.add(requirement.get("state"))
 
             route_effects = set(route.get("effects", []))
+            environments = {item["environmentId"]: item for item in report.get("environment", [])}
+            referenced_environments = [
+                environments[environment_id]
+                for environment_id in route.get("environmentIds", [])
+                if environment_id in environments
+            ]
+            referenced_environment_states = {environment["status"] for environment in referenced_environments}
+            if route.get("status") == "ready":
+                require(
+                    referenced_requirement_states <= {"verified", "not-required"},
+                    f"{figure_id}: ready route depends on derivation, assumptions, or missing conditions",
+                )
+                require(
+                    referenced_environment_states <= {"verified"},
+                    f"{figure_id}: ready route references an environment without route-level verification",
+                )
+            elif route.get("status") == "conditional":
+                unresolved_environments = [
+                    environment
+                    for environment in referenced_environments
+                    if environment["status"] in {"unknown", "missing"}
+                ]
+                require(
+                    not any(environment.get("provisioning") == "existing-only" for environment in unresolved_environments),
+                    f"{figure_id}: an existing-only environment cannot be installed by the approved route",
+                )
+                if unresolved_environments:
+                    require(
+                        "install" in route_effects,
+                        f"{figure_id}: unresolved isolated open-source environment has no approved installation route",
+                    )
             required_effects |= route_effects
 
             parameter_specs = {item["parameterId"]: item for item in route.get("parameters", [])}

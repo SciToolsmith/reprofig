@@ -24,6 +24,7 @@ URI_USERINFO = re.compile(r"(?i)(https?://)[^/@\s]+@")
 UNIX_USER_PATH = re.compile(r"/(?:Users|home)/[^/\s\"']+")
 WINDOWS_USER_PATH = re.compile(r"(?i)[A-Z]:[\\/]+Users[\\/]+[^\\/\s\"']+")
 MATLAB_RELEASE = re.compile(r"(?i)(?:MATLAB[_-])?(R\d{4}[ab])")
+RUNTIME_CHOICES = {"python", "matlab", "r", "rscript", "julia", "octave", "node", "nvidia"}
 
 
 def is_within(path: Path, root: Path) -> bool:
@@ -272,10 +273,19 @@ def main() -> int:
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
     parser.add_argument("--output", type=Path)
     parser.add_argument(
+        "--runtime",
+        action="append",
+        choices=sorted(RUNTIME_CHOICES | {"all"}),
+        help=(
+            "Probe only a runtime required by a candidate route; repeat for multiple runtimes. "
+            "Defaults to python. Use all only for an explicitly requested inventory."
+        ),
+    )
+    parser.add_argument(
         "--probe-matlab",
         action="store_true",
         help=(
-            "R2-gated: inspect static MATLAB release metadata after approval. "
+            "Inspect static MATLAB release metadata without launching MATLAB. "
             "This never launches MATLAB, executes startup.m, or consumes a license."
         ),
     )
@@ -285,6 +295,11 @@ def main() -> int:
     workspace = args.workspace.expanduser().resolve()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    selected_runtimes = set(args.runtime or ["python"])
+    if "all" in selected_runtimes:
+        selected_runtimes = set(RUNTIME_CHOICES)
+    if args.probe_matlab:
+        selected_runtimes.add("matlab")
 
     py_entries = []
     python_probe = (
@@ -292,7 +307,7 @@ def main() -> int:
         "print(json.dumps({'version':platform.python_version(),'implementation':platform.python_implementation(),"
         "'executable':sys.executable,'prefix':sys.prefix,'base_prefix':sys.base_prefix}))"
     )
-    for candidate in python_candidates(workspace):
+    for candidate in python_candidates(workspace) if "python" in selected_runtimes else []:
         path = candidate["actualPath"]
         entry = {
             "path": display_path(path, workspace),
@@ -322,9 +337,12 @@ def main() -> int:
         py_entries.append(entry)
 
     matlab_entries = []
-    for candidate in matlab_candidates():
+    for candidate in matlab_candidates() if "matlab" in selected_runtimes else []:
         entry = {
             "path": display_path(candidate, workspace),
+            "installationDetected": True,
+            "metadataVerified": False,
+            "runtimeVerified": False,
             "verified": False,
             "version": None,
             "release": None,
@@ -334,27 +352,30 @@ def main() -> int:
             metadata = matlab_static_metadata(candidate)
             entry["probe"] = {
                 "mode": "static-metadata",
-                "gated": True,
+                "gated": False,
                 "startupExecuted": False,
                 "licenseConsumed": False,
+                "runtimeVerified": False,
             }
             if metadata:
                 entry.update(metadata)
-                entry["verified"] = True
+                entry["metadataVerified"] = True
         else:
-            entry["probeSkipped"] = "Static MATLAB metadata probe requires explicit R2 approval."
+            entry["probeSkipped"] = "Static MATLAB metadata probe was not requested; installation path only."
         matlab_entries.append(entry)
 
     other = []
     commands = {
-        "R": ["R", "--vanilla", "--version"],
-        "Rscript": ["Rscript", "--vanilla", "--version"],
-        "Julia": ["julia", "--startup-file=no", "--history-file=no", "--version"],
-        "GNU Octave": ["octave", "--no-init-file", "--no-site-file", "--version"],
-        "Node.js": ["node", "--version"],
-        "NVIDIA": ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
+        "r": ("R", ["R", "--vanilla", "--version"]),
+        "rscript": ("Rscript", ["Rscript", "--vanilla", "--version"]),
+        "julia": ("Julia", ["julia", "--startup-file=no", "--history-file=no", "--version"]),
+        "octave": ("GNU Octave", ["octave", "--no-init-file", "--no-site-file", "--version"]),
+        "node": ("Node.js", ["node", "--version"]),
+        "nvidia": ("NVIDIA", ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"]),
     }
-    for label, cmd in commands.items():
+    for runtime_id, (label, cmd) in commands.items():
+        if runtime_id not in selected_runtimes:
+            continue
         executable = shutil.which(cmd[0])
         if not executable:
             continue
@@ -377,6 +398,7 @@ def main() -> int:
             "environmentPolicy": "minimal-allowlist",
             "workspaceExecutablesRun": False,
         },
+        "selectedRuntimes": sorted(selected_runtimes),
         "system": {
             "platform": platform.platform(),
             "os": platform.system(),
@@ -391,6 +413,7 @@ def main() -> int:
         "other": other,
         "notes": [
             "Discovery cannot prove absence from every custom location.",
+            "Only runtimes selected for candidate routes are probed unless --runtime all is explicitly used.",
             "Workspace and non-current Python interpreters are listed but never executed automatically.",
             "--probe-matlab reads static metadata only; MATLAB is never launched by this script.",
             "Verify required packages, toolboxes, licenses, and hardware separately for each approved route.",

@@ -1,12 +1,22 @@
 # Execution and validation
 
+Execution continues the paper-evidence analysis established in Phase 1. A route succeeds scientifically only when its implementation covers the declared generation chain and its outputs satisfy predefined validation criteria; a successful command, plausible image, or close visual match is not sufficient.
+
 ## Prepare the run
 
 - Validate the approval with `scripts/plan_gate.py`. This is a stateless structural and integrity check, not a replay-prevention store.
 - Before the first side effect, atomically claim `(reportSha256, approvalId, idempotencyKey)` in a persistent run ledger. Reject a previously claimed approval ID or idempotency key, including after process restart. Record the claim and terminal run status; never infer idempotency from a successful `plan_gate.py` exit alone.
-- Freeze report hash, figure image hash, source artifact hash, selected route, parameters, resource limits, and authorized effects.
+- Freeze report hash, figure image hash, target paper claim, generation chain, validation targets, source artifact hash, selected route, parameters, resource limits, and authorized effects.
 - Create a versioned run directory. Preserve original code and data read-only; place patches and generated files in separate paths.
 - Capture environment versions, package/toolbox lists, hardware, random seeds, locale, and relevant numerical backend settings.
+
+## Confirm generation-chain coverage
+
+- Trace the selected source, configuration, and entry points to every generation-chain stage: input, selection, preprocessing or calibration, method or model, aggregation or statistics, and visual encoding.
+- Record each stage as reproduced, substituted, derived, assumed, uncovered, or not required. Preserve the evidence reference for that judgment.
+- Confirm that actual input identity, parameter values, preprocessing, randomization, and output interfaces match the approved route.
+- Stop and renew the report and approval when an uncovered or substituted stage materially changes the reproduction level, validation target, or claim the route can support.
+- Freeze acceptance criteria before viewing final outputs where practical. Do not tune parameters solely to resemble the published figure.
 
 ## Route-specific execution
 
@@ -52,6 +62,14 @@ Prioritize scientific fidelity:
 
 Define tolerances before looking at final outputs where practical. Do not tune solely to mimic the published pixels.
 
+## Interpret results and hand off research value
+
+- Map each measured result to the target observation and paper claim. State whether the evidence supports, partially supports, does not support, or cannot test that claim.
+- Distinguish execution failure, implementation mismatch, input or protocol mismatch, stochastic or numerical variation, inconclusive evidence, and evidence that genuinely challenges a claim.
+- Explain discrepancies using generation-chain coverage, recorded assumptions, parameter sensitivity, robustness checks, and ambiguities in the paper. Do not infer that a paper claim is false merely because one route failed.
+- Identify reusable code, data transformations, parameterizations, validation procedures, and transferable method components, including the conditions under which they remain valid.
+- Formulate follow-up questions, comparison experiments, or method extensions grounded in the observed results and unresolved uncertainties. Label them as hypotheses or research directions, not as established novelty or validated findings.
+
 ## Patches and deviations
 
 - Keep compatibility patches as small overlays with diffs.
@@ -64,11 +82,15 @@ Define tolerances before looking at final outputs where practical. Do not tune s
 Record:
 
 - report and approval IDs/hashes;
+- scientific question, paper claim, figure evidence role, and target observations;
 - source URLs, versions, licenses, and hashes;
 - environment and hardware;
 - exact commands and parameters;
 - inputs and derivations/assumptions;
+- generation-chain coverage and substituted, assumed, or uncovered stages;
 - outputs and validation metrics;
 - runtime, memory, disk, network, and cost;
 - patches and deviations;
-- claims supported, partially supported, unsupported, or not tested.
+- claims supported, partially supported, unsupported, or not tested;
+- discrepancy interpretation, sensitivity or robustness findings, and evidence limits;
+- reusable artifacts and grounded follow-up research questions.

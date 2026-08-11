@@ -2,7 +2,7 @@
   "use strict";
 
   const report = window.__REPROFIG_REPORT__;
-  if (!report || report.schemaVersion !== "reprofig.report/v1") {
+  if (!report || report.schemaVersion !== "reprofig.report/v2") {
     document.body.textContent = "ReproFig 报告数据无效。";
     return;
   }
@@ -22,6 +22,24 @@
     "not-required": ["—", "不适用"]
   };
   const routeLabels = { ready: "可执行", conditional: "有条件", blocked: "受阻" };
+  const confidenceLabels = { high: "高置信度", medium: "中等置信度", low: "低置信度" };
+  const environmentStatusLabels = { verified: "路线级已核验", available: "已检测，待实机核验", unknown: "状态未知", missing: "未检测到" };
+  const provisioningLabels = { "existing-only": "需现有授权环境", "isolated-open-source": "可隔离配置" };
+  const originLabels = { paper: "论文明确", code: "代码明确", derived: "分析推导", assumption: "透明假设", user: "用户指定" };
+  const validationKindLabels = {
+    "qualitative-pattern": "定性现象",
+    quantitative: "定量指标",
+    comparative: "比较关系",
+    structural: "结构特征",
+    "visual-fidelity": "视觉还原"
+  };
+  const requirementCategoryLabels = {
+    environment: "运行环境",
+    input: "输入数据",
+    method: "方法实现",
+    protocol: "实验流程",
+    validation: "验证标准"
+  };
   const canonicalGatedEffects = new Set(["network", "install", "login", "payment", "upload", "overwrite", "gpu", "shared-license", "external-publish"]);
   const effectLabels = {
     "run-local-code": "运行本机代码",
@@ -38,6 +56,7 @@
   };
   const figures = report.figures || [];
   const sourcesById = new Map((report.sources || []).map((source) => [source.sourceId, source]));
+  const environmentsById = new Map((report.environment || []).map((environment) => [environment.environmentId, environment]));
   const currentRoutes = new Map();
   const included = new Set();
   const consents = new Set();
@@ -56,6 +75,63 @@
   function append(parent, ...children) {
     children.filter(Boolean).forEach((child) => parent.appendChild(child));
     return parent;
+  }
+
+  function sectionHeading(step, title, description) {
+    const header = node("header", "section-head");
+    append(header, node("span", "step-marker", step), node("h3", null, title));
+    if (description) header.appendChild(node("p", null, description));
+    return header;
+  }
+
+  function textList(items, className, emptyText) {
+    const list = node("ul", className || "plain-list");
+    if (!items || !items.length) {
+      list.appendChild(node("li", "empty-item", emptyText || "无"));
+      return list;
+    }
+    items.forEach((item) => list.appendChild(node("li", null, item)));
+    return list;
+  }
+
+  function sourceAnchor(source, className) {
+    if (!source) return null;
+    const externalHref = safeExternalHref(source.url);
+    const localHref = safeAssetPath(source.artifact && source.artifact.relativePath);
+    const href = externalHref || localHref;
+    if (!href) return node("span", className || "evidence-ref", source.title);
+    const link = node("a", className || "evidence-ref", source.title);
+    link.href = href;
+    if (externalHref) {
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+    return link;
+  }
+
+  function renderEvidenceRefs(refs) {
+    const wrapper = node("span", "evidence-refs");
+    (refs || []).forEach((sourceId) => {
+      const source = sourcesById.get(sourceId);
+      if (source) wrapper.appendChild(sourceAnchor(source, "evidence-ref"));
+    });
+    return wrapper.childNodes.length ? wrapper : null;
+  }
+
+  function labeledBlock(label, value, className) {
+    const wrapper = node("div", className || "labeled-block");
+    append(wrapper, node("span", "field-label", label), node("p", null, value));
+    return wrapper;
+  }
+
+  function renderPills(items, className, emptyText) {
+    const wrapper = node("div", className || "pill-list");
+    if (!items || !items.length) {
+      wrapper.appendChild(node("span", "muted-pill", emptyText || "无"));
+      return wrapper;
+    }
+    items.forEach((item) => wrapper.appendChild(node("span", "text-pill", item)));
+    return wrapper;
   }
 
   function publicHostname(value) {
@@ -145,10 +221,35 @@
     return (figure.routes || []).find((route) => route.routeId === routeId);
   }
 
+  function routeIsBlocked(figure, route) {
+    if (!route || route.status === "blocked" || (route.blockers || []).length) return true;
+    const blockingRequirements = new Set(
+      (figure.requirements || []).filter((requirement) => requirement.blocking).map((requirement) => requirement.requirementId)
+    );
+    if ((route.requirementIds || []).some((requirementId) => blockingRequirements.has(requirementId))) return true;
+    const requirementsById = new Map((figure.requirements || []).map((requirement) => [requirement.requirementId, requirement]));
+    const requirementStates = (route.requirementIds || [])
+      .map((requirementId) => requirementsById.get(requirementId))
+      .filter(Boolean)
+      .map((requirement) => requirement.state);
+    if (route.status === "ready" && requirementStates.some((state) => !["verified", "not-required"].includes(state))) return true;
+    const routeEnvironments = (route.environmentIds || [])
+      .map((environmentId) => environmentsById.get(environmentId))
+      .filter(Boolean);
+    const environmentStates = routeEnvironments.map((environment) => environment.status);
+    if (route.status === "ready" && environmentStates.some((state) => state !== "verified")) return true;
+    if (route.status === "conditional") {
+      const unresolved = routeEnvironments.filter((environment) => ["unknown", "missing"].includes(environment.status));
+      if (unresolved.some((environment) => environment.provisioning === "existing-only")) return true;
+      if (unresolved.length && !(route.effects || []).includes("install")) return true;
+    }
+    return false;
+  }
+
   function defaultRoute(figure) {
     const recommended = routeFor(figure, figure.reproduction && figure.reproduction.recommendedRouteId);
-    if (recommended && recommended.status !== "blocked") return recommended;
-    return (figure.routes || []).find((route) => route.status !== "blocked") || null;
+    if (recommended) return recommended;
+    return (figure.routes || []).find((route) => !routeIsBlocked(figure, route)) || (figure.routes || [])[0] || null;
   }
 
   function needsConsent(effect) {
@@ -194,6 +295,32 @@
     return wrapper;
   }
 
+  function renderRouteExecution(route, open) {
+    const details = node("details", "route-execution");
+    details.open = Boolean(open);
+    details.appendChild(node("summary", null, "执行条件、影响与资源"));
+    const body = node("div", "route-execution-body");
+    body.appendChild(labeledBlock("运行引擎", route.engine || "未指定", "compact-field"));
+    const environments = (route.environmentIds || []).map((environmentId) => environmentsById.get(environmentId)).filter(Boolean);
+    const environmentText = environments.length
+      ? environments.map((environment) => {
+          const status = environmentStatusLabels[environment.status] || environment.status;
+          const provisioning = provisioningLabels[environment.provisioning] || environment.provisioning;
+          return `${environment.label}（${status}；${provisioning}）`;
+        }).join("、")
+      : "无单独环境依赖";
+    body.appendChild(labeledBlock("环境", environmentText, "compact-field"));
+    body.appendChild(renderRouteFacts(route));
+    if (route.plan && route.plan.length) {
+      const plan = node("div", "execution-plan");
+      plan.appendChild(node("span", "field-label", "执行步骤"));
+      plan.appendChild(textList(route.plan, "numbered-list"));
+      body.appendChild(plan);
+    }
+    details.appendChild(body);
+    return details;
+  }
+
   function aggregateRouteFacts(routes) {
     const effects = new Set();
     routes.forEach((route) => (route.effects || []).forEach((effect) => effects.add(effect)));
@@ -210,9 +337,9 @@
 
   function initialize() {
     document.getElementById("paper-title").textContent = report.paper.title;
-    document.getElementById("report-summary").textContent = report.summary.oneLine;
+    document.getElementById("report-summary").textContent = report.summary.objective;
     const meta = document.getElementById("report-meta");
-    [["报告", report.reportId], ["图片", figures.length]].forEach(([label, value]) => {
+    [["报告", report.reportId], ["目标图", figures.length], ["总体研判", report.summary.oneLine]].forEach(([label, value]) => {
       const wrapper = node("div");
       append(wrapper, node("dt", null, label), node("dd", null, value));
       meta.appendChild(wrapper);
@@ -256,7 +383,7 @@
       const copy = node("span", "figure-tab-copy");
       append(copy,
         node("span", "figure-tab-label", `${figure.label} · ${levelLabels[figure.reproduction.level] || figure.reproduction.level}`),
-        node("span", "figure-tab-title", figure.caption || figure.summary),
+        node("span", "figure-tab-title", figure.understanding.visualSummary),
         node("span", "figure-tab-verdict", figure.reproduction.verdict)
       );
       button.appendChild(copy);
@@ -269,56 +396,165 @@
     if (!figure) return;
     const root = document.getElementById("figure-detail");
     root.textContent = "";
+    const understanding = figure.understanding;
+    const generation = figure.generationLogic;
+    const observationsById = new Map((understanding.observations || []).map((observation) => [observation.observationId, observation]));
+    const validationTargetsById = new Map((figure.validationTargets || []).map((target) => [target.targetId, target]));
 
     const header = node("header", "detail-head");
     append(header,
       node("div", "detail-kicker", `${figure.label} · ${figure.section || "论文图"}`),
-      node("h2", null, figure.reproduction.verdict),
+      node("h2", null, understanding.visualSummary),
       node("p", "caption", figure.caption)
     );
+    const headerBadges = node("div", "header-badges");
+    const levelBadge = node("span", "badge", levelLabels[figure.reproduction.level] || figure.reproduction.level);
+    levelBadge.dataset.level = figure.reproduction.level;
+    append(headerBadges, levelBadge, node("span", "confidence-badge", confidenceLabels[figure.reproduction.confidence] || figure.reproduction.confidence));
+    header.appendChild(headerBadges);
     root.appendChild(header);
 
-    const grid = node("div", "detail-grid");
+    const readingSection = node("section", "content-section reading-section");
+    readingSection.appendChild(sectionHeading("01", "读图", "先区分图上可直接观察到的现象，再进入论文解释。"));
+    const grid = node("div", "reading-grid");
     const paper = node("figure", "figure-paper");
     const imagePath = safeImagePath(figure.image);
     if (imagePath) {
       const image = node("img");
       image.src = imagePath;
-      image.alt = `${figure.label}: ${figure.caption || figure.summary}`;
+      image.alt = `${figure.label}: ${figure.caption || understanding.visualSummary}`;
       paper.appendChild(image);
     } else {
       paper.appendChild(node("p", "figure-placeholder", "本报告未捆绑原图。"));
+      const imageSource = sourceAnchor(sourcesById.get(figure.image && figure.image.sourceRef), "source-link");
+      if (imageSource) paper.appendChild(imageSource);
     }
-
-    const assessment = node("div", "assessment");
-    const badge = node("span", "badge", levelLabels[figure.reproduction.level] || figure.reproduction.level);
-    badge.dataset.level = figure.reproduction.level;
-    append(assessment, badge, node("h3", null, figure.summary), node("p", "assessment-summary", figure.reproduction.assessment));
-
-    const requirements = node("div", "requirements");
-    (figure.requirements || []).forEach((requirement) => {
-      const row = node("div", "requirement");
-      const status = stateLabels[requirement.state] || ["?", requirement.state];
-      const state = node("span", "requirement-state", `${status[0]} ${status[1]}`);
-      state.dataset.state = requirement.state;
-      append(row, state, node("span", "requirement-label", requirement.label), node("span", "requirement-detail", requirement.detail));
-      requirements.appendChild(row);
+    const observationPanel = node("div", "observation-panel");
+    observationPanel.appendChild(node("h4", null, "可观察事实"));
+    (understanding.observations || []).forEach((observation) => {
+      const item = node("article", "observation");
+      const meta = node("div", "observation-meta");
+      append(meta,
+        node("span", "location-chip", observation.location),
+        node("span", "confidence-text", confidenceLabels[observation.confidence] || observation.confidence)
+      );
+      append(item, meta, node("p", null, observation.statement), renderEvidenceRefs(observation.evidenceRefs));
+      observationPanel.appendChild(item);
     });
-    assessment.appendChild(requirements);
     grid.appendChild(paper);
-    grid.appendChild(assessment);
-    root.appendChild(grid);
+    grid.appendChild(observationPanel);
+    readingSection.appendChild(grid);
+    root.appendChild(readingSection);
 
-    const routesSection = node("section", "routes");
-    routesSection.appendChild(node("h3", "section-title", "候选复现路线"));
+    const evidenceSection = node("section", "content-section evidence-section");
+    evidenceSection.appendChild(sectionHeading("02", "证据作用", "把论文主张、作者解释和图本身的证据边界分开呈现。"));
+    const evidenceGrid = node("div", "evidence-grid");
+    append(evidenceGrid,
+      labeledBlock("论文用这张图支持什么", understanding.paperClaim, "evidence-card claim-card"),
+      labeledBlock("它在论证中的作用", understanding.evidenceRole, "evidence-card role-card"),
+      labeledBlock("作者如何解释", understanding.authorInterpretation, "evidence-card interpretation-card")
+    );
+    const limitations = node("div", "evidence-card limitations-card");
+    limitations.appendChild(node("span", "field-label", "证据边界"));
+    limitations.appendChild(textList(understanding.limitations, "plain-list", "未声明额外限制"));
+    evidenceGrid.appendChild(limitations);
+    evidenceSection.appendChild(evidenceGrid);
+    root.appendChild(evidenceSection);
+
+    const generationSection = node("section", "content-section generation-section");
+    generationSection.appendChild(sectionHeading("03", "生成链", "沿输入、方法与绘图映射还原这张图是怎样产生的。"));
+    const generationGrid = node("div", "generation-grid");
+    const inputColumn = node("div", "generation-column");
+    inputColumn.appendChild(node("h4", null, "输入"));
+    (generation.inputs || []).forEach((generationInput) => {
+      const card = node("article", "generation-card");
+      append(card,
+        node("span", "origin-chip", originLabels[generationInput.origin] || generationInput.origin),
+        node("strong", null, generationInput.label),
+        node("p", null, generationInput.description),
+        renderEvidenceRefs(generationInput.evidenceRefs)
+      );
+      inputColumn.appendChild(card);
+    });
+    const stepColumn = node("div", "generation-column");
+    stepColumn.appendChild(node("h4", null, "处理与分析步骤"));
+    const pipeline = node("ol", "pipeline");
+    (generation.steps || []).forEach((step) => {
+      const item = node("li", "pipeline-step");
+      const copy = node("div");
+      append(copy,
+        node("span", "origin-chip", originLabels[step.origin] || step.origin),
+        node("strong", null, step.label),
+        node("p", null, step.description),
+        renderEvidenceRefs(step.evidenceRefs)
+      );
+      item.appendChild(copy);
+      pipeline.appendChild(item);
+    });
+    stepColumn.appendChild(pipeline);
+    append(generationGrid, inputColumn, stepColumn);
+    generationSection.appendChild(generationGrid);
+    const plotCard = node("div", "plot-mapping");
+    append(plotCard,
+      node("span", "field-label", "绘图映射"),
+      node("p", null, generation.plotMapping.description),
+      renderPills(generation.plotMapping.encodings, "encoding-list", "未声明单独视觉编码"),
+      renderEvidenceRefs(generation.plotMapping.evidenceRefs)
+    );
+    generationSection.appendChild(plotCard);
+    const unknowns = node("div", "unknowns");
+    unknowns.appendChild(node("span", "field-label", "尚不确定"));
+    unknowns.appendChild(textList(generation.unknowns, "plain-list", "当前没有未披露的生成链缺口"));
+    generationSection.appendChild(unknowns);
+    root.appendChild(generationSection);
+
+    const validationSection = node("section", "content-section validation-section");
+    validationSection.appendChild(sectionHeading("04", "验证目标", "先定义什么结果算复现成功，再讨论路线是否可行。"));
+    const validationGrid = node("div", "validation-grid");
+    (figure.validationTargets || []).forEach((target) => {
+      const card = node("article", "validation-card");
+      append(card,
+        node("span", "validation-kind", validationKindLabels[target.kind] || target.kind),
+        node("span", "origin-chip", originLabels[target.origin] || target.origin),
+        node("h4", null, target.label),
+        labeledBlock("观察量", target.observable, "validation-field"),
+        labeledBlock("成功判据", target.criterion, "validation-field criterion-field"),
+        labeledBlock("能够支持到什么程度", target.supportsClaim, "validation-field"),
+        renderEvidenceRefs(target.evidenceRefs)
+      );
+      validationGrid.appendChild(card);
+    });
+    validationSection.appendChild(validationGrid);
+    root.appendChild(validationSection);
+
+    const assessmentSection = node("section", "content-section assessment-section");
+    assessmentSection.appendChild(sectionHeading("05", "复现研判", "在科学目标清楚之后，说明可复现层级、置信度和依据。"));
+    const assessment = node("div", "assessment-box");
+    const assessmentBadge = node("span", "badge", levelLabels[figure.reproduction.level] || figure.reproduction.level);
+    assessmentBadge.dataset.level = figure.reproduction.level;
+    append(assessment,
+      assessmentBadge,
+      node("span", "confidence-badge", confidenceLabels[figure.reproduction.confidence] || figure.reproduction.confidence),
+      node("h4", null, figure.reproduction.verdict),
+      node("p", null, figure.reproduction.assessment)
+    );
+    assessmentSection.appendChild(assessment);
+    root.appendChild(assessmentSection);
+
+    const routesSection = node("section", "content-section routes");
+    routesSection.appendChild(sectionHeading("06", "候选复现路线", "先比较每条路线承诺的科学范围，再展开执行代价。"));
     const routeList = node("div", "route-list");
     (figure.routes || []).forEach((route) => {
-      const label = node("label", "route");
+      const scope = route.scientificScope;
+      const card = node("article", "route");
+      const effectivelyBlocked = routeIsBlocked(figure, route);
+      card.dataset.status = effectivelyBlocked ? "blocked" : route.status;
+      const label = node("label", "route-choice");
       const radio = node("input");
       radio.type = "radio";
       radio.name = `route-${figure.figureId}`;
       radio.value = route.routeId;
-      radio.disabled = route.status === "blocked";
+      radio.disabled = effectivelyBlocked;
       radio.checked = currentRoutes.get(figure.figureId) === route.routeId;
       radio.addEventListener("change", () => {
         currentRoutes.set(figure.figureId, route.routeId);
@@ -326,48 +562,104 @@
         updateApproval();
       });
       const copy = node("span", "route-copy");
-      append(copy, node("strong", null, route.label), node("small", null, `${route.engine || "未指定引擎"} · ${(route.plan || []).join(" → ")}`), renderRouteFacts(route));
-      append(label, radio, copy, node("span", "route-status", routeLabels[route.status] || route.status));
-      routeList.appendChild(label);
+      append(copy, node("strong", null, route.label), node("small", null, scope.goal));
+      const statusGroup = node("span", "route-status-group");
+      if (route.recommended) statusGroup.appendChild(node("span", "recommended-chip", "推荐"));
+      statusGroup.appendChild(node("span", "route-status", routeLabels[effectivelyBlocked ? "blocked" : route.status] || route.status));
+      append(label, radio, copy, statusGroup);
+      card.appendChild(label);
+
+      if (route.blockers && route.blockers.length) {
+        const blockers = node("div", "route-blockers");
+        blockers.appendChild(node("strong", null, "阻断原因"));
+        blockers.appendChild(textList(route.blockers, "plain-list"));
+        card.appendChild(blockers);
+      }
+
+      const science = node("div", "route-science");
+      science.appendChild(labeledBlock("对论文主张的覆盖", scope.claimCoverage, "route-claim"));
+      const reproduced = (scope.reproducesObservationIds || []).map((observationId) => {
+        const observation = observationsById.get(observationId);
+        return observation ? observation.statement : observationId;
+      });
+      const targetLabels = (scope.validationTargetIds || []).map((targetId) => {
+        const target = validationTargetsById.get(targetId);
+        return target ? target.label : targetId;
+      });
+      const scopeGrid = node("div", "scope-grid");
+      [
+        ["将复现的现象", reproduced, "未声明"],
+        ["不会复现", scope.doesNotReproduce, "无已知排除项"],
+        ["替代与重建", scope.substitutions, "无替代"],
+        ["透明假设", scope.assumptions, "无额外假设"],
+        ["采用的验证目标", targetLabels, "未声明"]
+      ].forEach(([title, items, emptyText]) => {
+        const group = node("div", "scope-group");
+        group.appendChild(node("span", "field-label", title));
+        group.appendChild(renderPills(items, "scope-pills", emptyText));
+        scopeGrid.appendChild(group);
+      });
+      science.appendChild(scopeGrid);
+      science.appendChild(labeledBlock("推荐理由与权衡", scope.recommendationRationale, "route-rationale"));
+      const deliverableLabels = (route.deliverables || []).map((item) => `${item.label}（${item.extension}）`);
+      const deliverables = node("div", "route-deliverables");
+      deliverables.appendChild(node("span", "field-label", "预期产物"));
+      deliverables.appendChild(renderPills(deliverableLabels, "deliverable-list", "未声明产物"));
+      science.appendChild(deliverables);
+      card.appendChild(science);
+      card.appendChild(renderRouteExecution(route, false));
+      routeList.appendChild(card);
     });
     routesSection.appendChild(routeList);
+    root.appendChild(routesSection);
 
     const chosen = routeFor(figure, currentRoutes.get(figure.figureId));
-    if (chosen && chosen.parameters && chosen.parameters.length) {
-      routesSection.appendChild(renderParameters(figure, chosen));
-    }
+    const executionSection = node("section", "content-section execution-section");
+    executionSection.appendChild(sectionHeading("07", "执行条件", "这些条件决定如何安全执行，不决定图件在论文中的科学意义。"));
+    const requirements = node("div", "requirements");
+    const requirementsById = new Map((figure.requirements || []).map((requirement) => [requirement.requirementId, requirement]));
+    const chosenRequirements = chosen ? (chosen.requirementIds || []).map((requirementId) => requirementsById.get(requirementId)).filter(Boolean) : [];
+    chosenRequirements.forEach((requirement) => {
+      const row = node("div", "requirement");
+      row.dataset.blocking = requirement.blocking ? "true" : "false";
+      const status = stateLabels[requirement.state] || ["?", requirement.state];
+      const state = node("span", "requirement-state", `${status[0]} ${status[1]}`);
+      state.dataset.state = requirement.state;
+      const labelCopy = node("span", "requirement-label");
+      append(labelCopy,
+        node("strong", null, requirement.label),
+        node("small", null, requirementCategoryLabels[requirement.category] || requirement.category)
+      );
+      append(row, state, labelCopy, node("span", "requirement-detail", requirement.detail));
+      if (requirement.blocking) row.appendChild(node("span", "blocking-chip", "阻断"));
+      requirements.appendChild(row);
+    });
+    executionSection.appendChild(requirements);
+    if (chosen && !routeIsBlocked(figure, chosen) && chosen.parameters && chosen.parameters.length) executionSection.appendChild(renderParameters(figure, chosen));
+    if (chosen) executionSection.appendChild(renderRouteExecution(chosen, true));
 
     const includeLabel = node("label", "include-row");
     const includeInput = node("input");
     includeInput.type = "checkbox";
     includeInput.checked = included.has(figure.figureId);
-    includeInput.disabled = !chosen || chosen.status === "blocked";
+    includeInput.disabled = !chosen || routeIsBlocked(figure, chosen);
     includeInput.addEventListener("change", () => {
       if (includeInput.checked) included.add(figure.figureId);
       else included.delete(figure.figureId);
       updateApproval();
     });
-    append(includeLabel, includeInput, node("span", null, includeInput.disabled ? "当前没有可批准路线" : "将这张图纳入批准单"));
-    routesSection.appendChild(includeLabel);
+    append(includeLabel, includeInput, node("span", null, includeInput.disabled ? "当前没有可批准路线" : "选择这张图和当前路线，准备执行确认"));
+    executionSection.appendChild(includeLabel);
 
     const sourceBox = node("div", "sources");
+    sourceBox.appendChild(node("span", "field-label", "本图主要证据来源"));
     (figure.sourceRefs || []).slice(0, 3).forEach((sourceId) => {
       const source = sourcesById.get(sourceId);
-      if (!source) return;
-      const externalHref = safeExternalHref(source.url);
-      const localHref = safeAssetPath(source.artifact && source.artifact.relativePath);
-      const href = externalHref || localHref;
-      if (!href) return;
-      const link = node("a", "source-link", source.title);
-      link.href = href;
-      if (externalHref) {
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-      }
-      sourceBox.appendChild(link);
+      const link = sourceAnchor(source, "source-link");
+      if (link) sourceBox.appendChild(link);
     });
-    routesSection.appendChild(sourceBox);
-    root.appendChild(routesSection);
+    executionSection.appendChild(sourceBox);
+    root.appendChild(executionSection);
   }
 
   function renderParameters(figure, route) {
@@ -384,6 +676,11 @@
       let input;
       if (spec.type === "enum") {
         input = node("select");
+        if (!Object.prototype.hasOwnProperty.call(spec, "default")) {
+          const unset = node("option", null, spec.required ? "请选择" : "未设置");
+          unset.value = "";
+          input.appendChild(unset);
+        }
         (spec.enum || []).forEach((value) => {
           const option = node("option", null, value);
           option.value = value;
@@ -429,11 +726,12 @@
 
   function updateApproval() {
     const selected = figures.filter((figure) => included.has(figure.figureId));
+    document.getElementById("approval-panel").hidden = selected.length === 0;
     const effects = new Set();
     let parametersValid = true;
     selected.forEach((figure) => {
       const route = routeFor(figure, currentRoutes.get(figure.figureId));
-      if (!route || route.status === "blocked") parametersValid = false;
+      if (!route || routeIsBlocked(figure, route)) parametersValid = false;
       else {
         (route.effects || []).forEach((effect) => effects.add(effect));
         if (!collectParameters(figure, route).valid) parametersValid = false;
@@ -463,11 +761,39 @@
     const overwriteRouteSelected = effects.has("overwrite");
     const button = document.getElementById("export-approval");
     button.disabled = selected.length < minimum || selected.length > maximum || !outputValid || !consentsValid || !parametersValid || overwriteRouteSelected;
-    button.textContent = selected.length ? `导出 ${selected.length} 张图的批准单` : "导出批准单";
+    button.textContent = selected.length ? `导出 ${selected.length} 张图的执行批准单` : "导出执行批准单";
     const selectedRoutes = selected.map((figure) => routeFor(figure, currentRoutes.get(figure.figureId))).filter(Boolean);
-    document.getElementById("approval-summary").textContent = selected.length
-      ? `${selected.map((figure) => figure.label).join("、")} · ${aggregateRouteFacts(selectedRoutes)} · ${overwriteRouteSelected ? "所选路线要求覆盖文件；本静态页面只导出新建文件批准单，请改选无覆盖路线或重新生成逐文件审批报告。" : "仅创建新文件；超过上限须重新批准。"}`
-      : "请在图片详情中选择路线并勾选“纳入批准单”。";
+    const approvalSummary = document.getElementById("approval-summary");
+    approvalSummary.textContent = "";
+    selected.forEach((figure) => {
+      const route = routeFor(figure, currentRoutes.get(figure.figureId));
+      if (!route) return;
+      const scope = route.scientificScope;
+      const card = node("article", "approval-route");
+      append(card,
+        node("span", "approval-figure", figure.label),
+        node("h3", null, route.label),
+        node("p", null, scope.claimCoverage)
+      );
+      const validationLabels = (scope.validationTargetIds || []).map((targetId) => {
+        const target = (figure.validationTargets || []).find((item) => item.targetId === targetId);
+        return target ? target.label : targetId;
+      });
+      const deliverableLabels = (route.deliverables || []).map((item) => item.label);
+      const summaryGrid = node("div", "approval-route-grid");
+      [["假设", scope.assumptions, "无额外假设"], ["验证目标", validationLabels, "未声明"], ["产物", deliverableLabels, "未声明"]].forEach(([label, items, emptyText]) => {
+        const field = node("div", "approval-route-field");
+        field.appendChild(node("span", "field-label", label));
+        field.appendChild(renderPills(items, "scope-pills", emptyText));
+        summaryGrid.appendChild(field);
+      });
+      card.appendChild(summaryGrid);
+      approvalSummary.appendChild(card);
+    });
+    if (selected.length) {
+      const boundary = node("p", "approval-boundary", `${aggregateRouteFacts(selectedRoutes)} · ${overwriteRouteSelected ? "所选路线要求覆盖文件；本静态页面只导出新建文件批准单，请改选无覆盖路线或重新生成逐文件审批报告。" : "仅创建新文件；超过上限须重新批准。"}`);
+      approvalSummary.appendChild(boundary);
+    }
   }
 
   function exportApproval() {
@@ -475,7 +801,7 @@
     const effects = new Set();
     figures.filter((figure) => included.has(figure.figureId)).forEach((figure) => {
       const route = routeFor(figure, currentRoutes.get(figure.figureId));
-      if (!route || route.status === "blocked") return;
+      if (!route || routeIsBlocked(figure, route)) return;
       (route.effects || []).forEach((effect) => effects.add(effect));
       selectedFigures.push({
         figureId: figure.figureId,
@@ -540,7 +866,9 @@
     const envList = node("ul", "appendix-list");
     (report.environment || []).forEach((environment) => {
       const item = node("li", "appendix-item");
-      append(item, node("strong", null, `${environment.label} · ${environment.status}`), node("small", null, `${environment.version || "版本未知"} · ${environment.detail || "无补充说明"}`));
+      const status = environmentStatusLabels[environment.status] || environment.status;
+      const provisioning = provisioningLabels[environment.provisioning] || environment.provisioning;
+      append(item, node("strong", null, `${environment.label} · ${status}`), node("small", null, `${provisioning} · ${environment.version || "版本未知"} · ${environment.detail || "无补充说明"}`));
       envList.appendChild(item);
     });
     envSection.appendChild(envList);
