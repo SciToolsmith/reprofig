@@ -1,0 +1,4 @@
+interface:
+  display_name: "ReproFig"
+  short_description: "评估论文图复现条件，生成可视化批准报告并执行获批路线"
+  default_prompt: "Use $reprofig to assess selected paper figures, generate a feasibility report, and execute only the route I approve."

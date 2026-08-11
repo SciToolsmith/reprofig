@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>ReproFig 复现评估</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="返回报告顶部"><span>RF</span> ReproFig</a>
+      <p>先研判，再复现</p>
+    </header>
+
+    <main id="top" class="page">
+      <section class="report-head" aria-labelledby="paper-title">
+        <div>
+          <p class="eyebrow">论文图复现评估</p>
+          <h1 id="paper-title"></h1>
+          <p id="report-summary" class="lead"></p>
+        </div>
+        <dl id="report-meta" class="report-meta"></dl>
+      </section>
+
+      <nav aria-label="目标图片" class="figure-nav">
+        <div id="figure-tabs" class="figure-tabs"></div>
+      </nav>
+
+      <section id="figure-detail" class="figure-detail" aria-live="polite"></section>
+
+      <details class="appendix">
+        <summary>环境、来源与完整调查证据</summary>
+        <div id="appendix-content" class="appendix-content"></div>
+      </details>
+    </main>
+
+    <section class="approval" aria-labelledby="approval-title">
+      <div class="approval-inner">
+        <div>
+          <p class="eyebrow">下一步</p>
+          <h2 id="approval-title">选择要批准的复现路线</h2>
+          <p id="approval-summary" class="approval-summary"></p>
+        </div>
+        <div id="consent-list" class="consent-list"></div>
+        <label class="output-field">
+          <span>输出目录</span>
+          <input id="output-root" type="text" autocomplete="off">
+        </label>
+        <button id="export-approval" class="primary" type="button" disabled>导出批准单</button>
+      </div>
+    </section>
+
+    <script src="report-data.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
