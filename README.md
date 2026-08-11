@@ -1,5 +1,7 @@
 # ReproFig
 
+**English** | [简体中文](README.zh-CN.md)
+
 **Evidence-first scientific figure reproduction for Codex.**
 
 ReproFig helps researchers determine whether a figure from a scientific paper can be reproduced on the current computer—before committing to large downloads, new environments, proprietary software, or long-running jobs.
@@ -102,6 +104,7 @@ ReproFig will return a local report containing the figure interpretation, reprod
 ```text
 .
 ├── README.md
+├── README.zh-CN.md
 ├── LICENSE
 └── reprofig/
     ├── SKILL.md
