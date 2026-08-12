@@ -1,5 +1,11 @@
 # Source and environment audit
 
+## Purpose and timing
+
+Use this audit only after the target figure's scientific meaning, paper-evidence role, generation chain, validation target, and candidate routes are understood. Treat sources and environments as evidence for or constraints on those routes, not as the purpose of ReproFig.
+
+Start from candidate-route requirements. Audit relevant sources and local capabilities thoroughly enough to avoid false negatives, but do not inventory unrelated software, hardware, repositories, or datasets. Return every finding to a generation-chain link, route decision, or validation condition.
+
 ## Establish source authority
 
 Use this priority order:
@@ -11,7 +17,7 @@ Use this priority order:
 5. archival service with author/version evidence;
 6. third-party port or mirror, explicitly labeled.
 
-For each source, record author/publisher, URL, version or commit, checked date, access state, declared size, local size, SHA-256, license, and whether redistribution is permitted. A GitHub repository without a license is readable but not automatically reusable or redistributable.
+For each source, record author/publisher, URL, version or commit, checked date, access state, declared size, local size, SHA-256, license, and whether redistribution is permitted. Treat `access.state` as the current upstream retrieval or reacquisition status; a verified `artifact` separately records that a local copy is already present. For example, a local archived ZIP may coexist with `access.state: login-required` when a fresh upstream download requires sign-in. Use `local` for a user/local-only source without a separately verified retrieval route. A GitHub repository without a license is readable but not automatically reusable or redistributable.
 
 ## Inspect code before execution
 
@@ -20,7 +26,7 @@ For each source, record author/publisher, URL, version or commit, checked date, 
 3. List archive entries without extracting first. Reject absolute paths, `..`, device files, and suspicious links.
 4. Find the license and distinguish use permission from redistribution permission.
 5. Read the public entry point, key algorithm implementation, dependency declarations, defaults, randomness, file/network/system operations, unsafe deserialization, native binaries, MEX files, install hooks, and telemetry.
-6. Map function inputs and outputs to the figure dependencies.
+6. Map relevant entry points, function inputs and outputs, defaults, and file interfaces to the figure's explicit generation-chain stages. Use the schema origins `paper`, `code`, `derived`, `assumption`, or `user` for documented links. Put uncovered links in `generationLogic.unknowns` and, when they constrain a route, in a `missing` requirement or route blocker.
 7. Run a bounded smoke test only after static inspection. Use a temporary directory, non-root execution, resource limits, and no network after environment setup.
 8. Record exact command, exit code, runtime, output shape/type, and errors. Describe it as a smoke test, not figure reproduction.
 
@@ -32,9 +38,19 @@ If no compatible runtime exists:
 
 Use `scripts/inspect_artifact.py` to create the initial artifact inventory.
 
+Map environment findings into the report conservatively:
+
+- use `verified` only after the exact route-required executable, packages/toolboxes/functions, license, and hardware capability have passed a live probe;
+- use `available` when static inspection finds an installation or candidate runtime but does not establish route-level execution capability;
+- use `unknown` when inspection is inconclusive and `missing` only after the documented search finds no candidate;
+- mark proprietary, institutional, licensed, hardware-bound, or user-provided runtimes as `existing-only`;
+- mark only project-locally installable open-source stacks as `isolated-open-source`.
+
+An `available` environment can support only a `conditional` route. An unresolved `existing-only` environment blocks execution; do not convert it into an installation plan. An unresolved `isolated-open-source` environment may remain conditional only with an explicit gated `install` effect.
+
 ## Verify data identity
 
-Do not accept a dataset merely because its topic or filename is similar. Compare:
+Do not accept a dataset merely because its topic or filename is similar. First identify which generation-chain stage and target observation require it, then compare:
 
 - paper title, DOI, authors, experiment name, and repository citation;
 - variables, units, sample count, sampling rate, duration, channels, subject/device/specimen IDs;
@@ -53,7 +69,7 @@ Before download, obtain size from HTTP headers, repository metadata, manifests, 
 
 ## Avoid environment false negatives
 
-Do not conclude “not installed” from one `which` or import failure.
+Probe the engines, packages, toolboxes, licenses, and hardware required by candidate routes. Call `probe_environment.py` with explicit route-specific `--runtime` values; its default is Python, and `--runtime all` is reserved for an explicitly requested inventory. Do not conclude “not installed” from one `which` or import failure, and do not perform a broad machine inventory unrelated to those routes.
 
 ### General sequence
 
@@ -71,7 +87,9 @@ Check the active interpreter, `python`, `python3`, Conda environments, virtualen
 
 ### MATLAB
 
-Check PATH plus standard application locations such as macOS `/Applications/MATLAB_R*.app/bin/matlab`, Windows Program Files, and common Linux install roots. Use absolute-path batch probes to obtain version, toolbox inventory, `license('test', ...)`, and required function locations. Do not infer absence from PATH alone. Do not install MATLAB or accept a MathWorks license automatically.
+Check PATH plus standard application locations such as macOS `/Applications/MATLAB_R*.app/bin/matlab`, Windows Program Files, and common Linux install roots. `probe_environment.py --runtime matlab --probe-matlab` reads static release metadata only and is safe for Phase 1; it records installation and metadata detection separately from runtime verification, does not launch MATLAB, and does not verify licensing. Launching an absolute-path batch probe to obtain the live version, toolbox inventory, `license('test', ...)`, or required function locations can execute startup configuration or consume a shared license. Treat that as a separately approved R2 investigation action and log the decision; when a floating or institutional license may be consumed, also declare `shared-license` on any execution route that needs it. Do not infer absence from PATH alone. Do not install MATLAB or accept a MathWorks license automatically.
+
+In report terms, static MATLAB detection is `available + existing-only`, never `verified`. Promote it to `verified` only after the separately approved live probe establishes the exact capabilities required by the selected route.
 
 ### Other proprietary tools
 

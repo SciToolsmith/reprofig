@@ -1,21 +1,22 @@
 ---
 name: reprofig
-description: Assess and reproduce code- or data-generated figures from scientific papers. Use when Codex receives a paper, DOI, figure image, or figure numbers and must determine whether the figures can be scientifically reproduced; inspect figure semantics and paper conditions; search, download, license-check, read, and smoke-test relevant code or data; verify local MATLAB, Python, R, Julia, proprietary tools, packages, and hardware; generate a local feasibility website for user approval; or execute and validate only the approved reproduction route. Do not use for pixel tracing, curve fitting to the published image, or simple image extraction; route scientific flowcharts and conceptual schematics to sci-diagram-pptx when available.
+description: Understand and scientifically reproduce code- or data-generated figures from research papers. Use when Codex receives a paper, DOI, figure image, or figure numbers and must interpret what a target figure shows and how it supports the paper; reconstruct its explicit input-to-figure generation chain; derive evidence-backed reproduction routes from the paper, code, data, and transparent assumptions; audit only the sources, environment, permissions, and resources required by those routes; obtain approval; execute and scientifically validate the selected route; and deliver traceable results, limitations, reusable artifacts, and grounded follow-up research directions. Do not use for pixel tracing, curve fitting to the published image, or simple image extraction; route scientific flowcharts and conceptual schematics to sci-diagram-pptx when available.
 ---
 
 # ReproFig
 
 ## Core contract
 
-- Reproduce the research process and its key phenomenon or conclusion. Do not treat pixel similarity, screenshot tracing, or digitized curves as scientific reproduction.
-- Inspect both the figure and the paper context before deciding feasibility. Read the caption, axes, legends, panels, nearby text, equations, tables, methods, supplements, and cited implementations.
-- Complete Phase 1 and render its local report before a full reproduction run, even when the initial request says “start now.”
-- Stop at the approval gate. Continue only after the user approves named figures, routes, budgets, outputs, and gated actions.
-- Check existing local software and environments comprehensively before proposing installation. A missing PATH entry is not proof that a tool is absent.
-- Prefer an existing compatible environment. Create an isolated open-source environment automatically only within the bounded investigation budget; never modify a global environment.
-- Never install proprietary software, accept a license agreement, purchase a product, log in, upload private artifacts, or contact a third party without explicit authority.
+- Treat the target figure as an entry into the paper's evidence chain. Explain the scientific question, what is plotted, the figure's argumentative role, and the claim or phenomenon it is meant to support.
+- Inspect the figure together with its caption, axes, legends, panels, nearby text, equations, tables, methods, supplements, and cited implementations.
+- Reconstruct an explicit generation chain from input and selection through preprocessing, method or model, aggregation or statistics, and visual encoding. Mark every documented link with the schema origin `paper`, `code`, `derived`, `assumption`, or `user`; record absent links in `generationLogic.unknowns` and, when relevant, as a `missing` requirement or route blocker.
+- Reproduce the research process and test the key phenomenon or conclusion represented by the figure. Do not treat pixel similarity, screenshot tracing, digitized curves, or a successful program exit as scientific reproduction.
+- Define the target observables and acceptance criteria before judging route feasibility or looking at final outputs.
+- Derive candidate routes from scientific evidence first. Audit only the sources, environments, permissions, and resources needed to confirm or execute those routes.
 - Never silently change the data, algorithm, language, implementation, or reproduction level. Present the alternative as a separate route.
 - Preserve source artifacts. Work in temporary or versioned directories and record URLs, versions, hashes, licenses, commands, assumptions, and decisions.
+- Complete Phase 1 and render its local report before a full reproduction run, even when the initial request says “start now.” Stop at the approval gate and continue only after the user approves named figures, routes, budgets, outputs, and gated actions.
+- Prefer an existing compatible environment and verify it comprehensively before proposing installation. Create an isolated open-source environment only within the bounded investigation budget; never modify a global environment. Never install proprietary software, accept terms, purchase a product, log in, upload private artifacts, or contact a third party without explicit authority.
 
 ## Scope and routing
 
@@ -36,65 +37,69 @@ Assign exactly one reproduction level per figure:
 - `editable-reconstruction`: reproduce a diagram’s semantic structure as editable native objects; this is not numerical reproduction.
 - `original-case-blocked`: a required original input, protected resource, instrument, or irreducible method detail is unavailable.
 
-Audit five conditions in this order:
+After establishing the figure meaning, evidence role, generation chain, and validation target, audit five route conditions in this order:
 
-1. `environment` — runtime, toolboxes, packages, hardware, licenses.
-2. `input` — exact data, simulatable input, substitute input, or raw acquisition.
-3. `method` — implementation, equations, algorithmic steps, model, and interfaces.
-4. `protocol` — parameters, preprocessing, randomization, splits, calibration, plotting, and statistical procedure.
-5. `validation` — the observable phenomenon and acceptance criteria.
+1. `input` — exact data, simulatable input, substitute input, or raw acquisition.
+2. `method` — implementation, equations, algorithmic steps, model, and interfaces.
+3. `protocol` — parameters, preprocessing, randomization, splits, calibration, plotting, and statistical procedure.
+4. `validation` — the observable phenomenon and acceptance criteria.
+5. `environment` — route-specific runtime, toolboxes, packages, hardware, and licenses.
 
 Use these states: `verified`, `derivable`, `assumable`, `missing`, `not-required`. Treat an undisclosed value as `derivable` or `assumable` when scientific reasoning supports a transparent choice; do not automatically mark every unpublished parameter as blocking.
 
 Read [investigation-schema.md](references/investigation-schema.md) before creating assessments.
 
-## Phase 1 — Investigate and report
+## Phase 1 — Understand, investigate, and plan
 
-### 1. Inventory the target
+### 1. Interpret the target figure in the paper
 
 - Resolve the paper version and target figure IDs.
 - Extract each target image only as an analysis artifact; retain its full caption and paper page.
-- Describe what is plotted, how it is likely produced, its argumentative role, and the key observation to validate.
+- State the scientific question, what is plotted, variables and units, axes and encodings, panel relationships, and the key observations.
+- Explain the figure's argumentative role and identify the paper claim each observation is intended to support, qualify, or compare.
 - Identify upstream dependencies between figures. A downstream comparison may depend on an earlier input or model output.
 
-### 2. Audit local capability
+### 2. Reconstruct the generation chain and validation target
 
-- Run `scripts/probe_environment.py` and supplement it with tool-specific checks.
-- Search PATH, standard application locations, package managers, Conda/virtual environments, and product-specific launchers.
-- Verify executable versions, imports/functions, toolboxes, licenses, and hardware with bounded read-only probes.
-- Prefer existing environments. If an open-source Python/R/Julia environment is absent, create an isolated environment inside the run workspace when it fits the R1 budget.
-- If MATLAB, COMSOL, Abaqus, Mathematica, or another proprietary runtime is absent, do not install or accept terms. Mark the runtime as missing and evaluate a separate compatible route only when evidence supports it.
+- Build an ordered chain covering raw or simulated input, selection, preprocessing or calibration, method or model, aggregation or statistics, and visual encoding.
+- For every link, record its inputs, outputs, interfaces, parameters, evidence source, and origin: `paper`, `code`, `derived`, `assumption`, or `user`.
+- Classify unresolved details as derivable, transparently assumable, or genuinely missing. Do not treat the absence of an author-specific plotting script as a blocker when the scientific chain can be reconstructed.
+- Define target observables and acceptance criteria from the scientific content before inspecting final reproduction outputs.
+- Separate the original-case claim from any narrower transferable claim that an alternative route could test.
 
-Read [source-environment-audit.md](references/source-environment-audit.md) for the required search and verification procedure.
+### 3. Form candidate reproduction routes
 
-### 3. Find and audit code and data
+- Map each candidate route onto the generation chain and validation target. State which links it reproduces, replaces, derives, assumes, or cannot cover.
+- Give every route a stable ID, engine, required inputs and effects, deliverables, assumptions, expected runtime/storage/download size, blockers, and at most five execution steps. The route must state how it serves the figure's assigned reproduction level; it does not declare a second level.
+- Explain the claim each route can and cannot support. Do not present an alternative dataset or implementation as the original case.
+- Prefer MATLAB when the author's implementation is MATLAB and a working licensed runtime is available. Prefer Python when the implementation is Python, a verified port is required, or a transparent independent implementation is the scientifically justified route. Base the recommendation on evidence, not taste.
+
+### 4. Audit route-relevant sources, data, and local capability
 
 - Search in this order: user-provided artifact, author/publisher source, institutional repository, cited official implementation, verified archival repository, then clearly labeled third-party implementation.
 - Do not stop at a link. For a small publicly downloadable resource with clear access, download it to the investigation workspace, record its size and SHA-256, inspect its license, list its contents safely, read the entry point and key algorithmic code, identify dependencies and interfaces, and run a minimal bounded smoke test when a compatible environment is available.
 - Treat a smoke test as evidence that the implementation starts and returns structurally valid output, not that a paper figure has been reproduced.
-- If no compatible open-source runtime exists, create an isolated environment within the R1 budget and test there. If the runtime is proprietary or installation requires terms, perform static inspection and report the unverified execution condition.
 - Verify dataset identity rather than trusting its filename. Match the paper case, authors, sample count, variables, units, sampling rate, channels, segment, preprocessing, checksum, and license.
 - Before downloading data, determine its declared or estimated size. Ask before a large download, controlled-access request, login, paid access, or any resource exceeding the current budget.
 - Distinguish “not found in checked public sources” from “does not exist.” Record the search date and channels.
+- Run `scripts/probe_environment.py` with one or more route-specific `--runtime` values and supplement it with tool-specific checks. Do not request `--runtime all` unless the user explicitly wants a broad inventory.
+- Search PATH, standard application locations, package managers, Conda/virtual environments, and product-specific launchers. A missing PATH entry is not proof that a tool is absent.
+- Verify required executable versions, imports/functions, toolboxes, licenses, and hardware with bounded read-only probes. Avoid broad inventory unrelated to a candidate route.
+- Prefer existing environments. If a required open-source Python/R/Julia environment is absent, create an isolated environment inside the run workspace only when it fits the R1 budget.
+- If MATLAB, COMSOL, Abaqus, Mathematica, or another proprietary runtime is absent, do not install or accept terms. Mark that execution condition as missing and evaluate a separate compatible route only when scientific evidence supports it.
 
 Use `scripts/inspect_artifact.py` for safe hashes and archive inventory. Follow [source-environment-audit.md](references/source-environment-audit.md).
 
-### 4. Form routes and validation criteria
-
-- Map every figure to environment, input, method, protocol, and validation evidence.
-- Create one or more explicit routes. Give each route a stable ID, reproduction level, engine, required effects, deliverables, assumptions, expected runtime/storage/download size, blockers, and at most five execution steps.
-- Prefer MATLAB when the author’s implementation is MATLAB and the local licensed runtime works. Prefer Python when the implementation is Python, a verified port is required, or a transparent independent implementation is the approved route. Base the recommendation on evidence, not taste.
-- Define validation from scientific content: units, axes, peaks, frequencies, trends, mode assignment, topology, reported metrics, confidence intervals, and variability. Use visual resemblance only as a secondary presentation check.
-
 ### 5. Build the report
 
+- Lead with the scientific question, paper claim, figure interpretation, generation chain, validation targets, and candidate routes. Present source, environment, license, resource, and permission evidence as support for route decisions rather than as the purpose of the report.
 - Write a structured `reprofig-report.json` following [investigation-schema.md](references/investigation-schema.md).
 - For every image to be bundled, record `redistributionAllowed: true` only after checking its rights. Public bundles accept PNG only (`mediaType: image/png`); place approved PNG assets under one dedicated directory.
 - Run `scripts/build_report.py --input reprofig-report.json --output <report-dir> --asset-root <approved-asset-dir>`.
-- Open and inspect the generated `index.html`. Verify that every requested figure appears exactly once, all source links and local assets resolve, and blocked conditions are visible.
+- Open and inspect the generated `index.html`. If the browser blocks `file://`, serve only the report directory from an ephemeral server bound to `127.0.0.1`, then stop that server after inspection. Verify that every requested figure appears exactly once, scientific interpretation precedes reproduction-readiness details, all source links and local assets resolve, and blocked conditions are visible.
 - Present the report location and stop for approval.
 
-The webpage is a read-only investigation report and approval-draft generator, not an execution surface. Follow [web-report-contract.md](references/web-report-contract.md).
+The webpage is a read-only reproduction investigation and decision report with an approval-draft generator, not an execution surface. Follow [web-report-contract.md](references/web-report-contract.md).
 
 ## Investigation budget and permission gates
 
@@ -126,22 +131,35 @@ Read [execution-validation.md](references/execution-validation.md) before execut
 
 1. Freeze the approval, source hashes, environment, and inputs. Before the first side effect, atomically persist the approval ID and idempotency key in a run ledger; reject an already-consumed key.
 2. Create a versioned run directory and isolated environment. Never modify the only copy of source code or data.
-3. Reproduce one figure at a time: smoke test, full run, export, then validate.
-4. Apply compatibility fixes as documented overlays. Ask before semantic algorithm changes.
-5. Enforce the approved time, memory, storage, network, and cost limits.
-6. Stop and regenerate the report if the route, source, data, algorithm, language, reproduction level, or budget changes materially.
-7. Preserve partial outputs and logs on failure; do not hide discrepancies.
+3. Before execution, trace the selected implementation to every declared generation-chain link. Mark uncovered or substituted links and stop for renewed approval if they materially change the route or supported claim.
+4. Reproduce one figure at a time: smoke test, full run, export, then validate against the predefined scientific criteria.
+5. Apply compatibility fixes as documented overlays. Ask before semantic algorithm changes.
+6. Enforce the approved time, memory, storage, network, and cost limits.
+7. Stop and regenerate the report if the route, source, data, algorithm, language, reproduction level, supported claim, or budget changes materially.
+8. Preserve partial outputs and logs on failure; do not hide discrepancies or tune solely toward visual resemblance.
+
+## Research handoff
+
+After execution, or after establishing a scientifically meaningful blocker:
+
+- Map every validation result back to the target observation and paper claim. Distinguish execution failure, reproduction mismatch, inconclusive evidence, and evidence that genuinely challenges a claim.
+- Explain discrepancies using evidence from inputs, generation-chain coverage, implementation, parameters, numerical behavior, randomness, and paper ambiguity.
+- Report sensitivity or robustness where it is relevant and feasible within the approved route.
+- Identify reusable code, data transformations, parameterizations, validation procedures, and transferable method components together with their limits.
+- Formulate grounded follow-up questions, comparison experiments, or method extensions as hypotheses or research directions, never as established novelty or validated conclusions.
 
 ## Deliverables
 
 Deliver a versioned bundle containing:
 
 - updated investigation/result website;
+- figure interpretation, paper-evidence map, explicit generation-chain specification, and predefined validation targets;
 - reproduction code and configuration;
 - generated figures and any editable source;
 - validation metrics and comparison notes;
 - environment lock or exact runtime manifest;
 - run logs and resource usage;
-- provenance, license, assumptions, patches, approvals, and supported/unsupported claim manifest.
+- provenance, license, assumptions, patches, approvals, and supported/partially supported/unsupported/inconclusive claim manifest;
+- research handoff covering discrepancies, sensitivities, reusable artifacts, evidence limits, and grounded follow-up questions.
 
 Link to restricted or non-redistributable resources instead of rebundling them.

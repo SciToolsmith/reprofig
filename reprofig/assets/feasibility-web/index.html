@@ -4,19 +4,19 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-    <title>ReproFig 复现评估</title>
+    <title>ReproFig 图件理解与复现研判</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
     <header class="topbar">
       <a class="brand" href="#top" aria-label="返回报告顶部"><span>RF</span> ReproFig</a>
-      <p>先研判，再复现</p>
+      <p>读图 · 研判 · 验证</p>
     </header>
 
     <main id="top" class="page">
       <section class="report-head" aria-labelledby="paper-title">
         <div>
-          <p class="eyebrow">论文图复现评估</p>
+          <p class="eyebrow">图件理解与复现研判</p>
           <h1 id="paper-title"></h1>
           <p id="report-summary" class="lead"></p>
         </div>
@@ -27,29 +27,32 @@
         <div id="figure-tabs" class="figure-tabs"></div>
       </nav>
 
-      <section id="figure-detail" class="figure-detail" aria-live="polite"></section>
+      <section id="figure-detail" class="figure-detail"></section>
 
       <details class="appendix">
-        <summary>环境、来源与完整调查证据</summary>
+        <summary>完整环境、来源与调查证据</summary>
         <div id="appendix-content" class="appendix-content"></div>
       </details>
-    </main>
 
-    <section class="approval" aria-labelledby="approval-title">
-      <div class="approval-inner">
-        <div>
-          <p class="eyebrow">下一步</p>
-          <h2 id="approval-title">选择要批准的复现路线</h2>
-          <p id="approval-summary" class="approval-summary"></p>
+      <section id="approval-panel" class="approval" aria-labelledby="approval-title" hidden>
+        <div class="approval-inner">
+          <div class="approval-intro">
+            <p class="eyebrow">执行边界</p>
+            <h2 id="approval-title">确认已选择的复现方案</h2>
+            <p>确认单只授权报告中已经声明的路线、参数、产物和影响；它不会在本页面运行任何代码。</p>
+          </div>
+          <div id="approval-summary" class="approval-summary"></div>
+          <div id="consent-list" class="consent-list"></div>
+          <div class="approval-actions">
+            <label class="output-field">
+              <span>输出目录</span>
+              <input id="output-root" type="text" autocomplete="off">
+            </label>
+            <button id="export-approval" class="primary" type="button" disabled>导出执行批准单</button>
+          </div>
         </div>
-        <div id="consent-list" class="consent-list"></div>
-        <label class="output-field">
-          <span>输出目录</span>
-          <input id="output-root" type="text" autocomplete="off">
-        </label>
-        <button id="export-approval" class="primary" type="button" disabled>导出批准单</button>
-      </div>
-    </section>
+      </section>
+    </main>
 
     <script src="report-data.js"></script>
     <script src="app.js"></script>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate ReproFig report JSON and build a portable static approval report."""
+"""Validate ReproFig report JSON and build a portable scientific investigation report."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import math
 import re
 import shutil
 import sys
+import zlib
 from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qsl, urlsplit
 
@@ -23,9 +24,23 @@ LEVELS = {
     "editable-reconstruction",
     "original-case-blocked",
 }
-REQUIREMENT_CATEGORIES = ["environment", "input", "method", "protocol", "validation"]
+ENVIRONMENT_STATES = {"verified", "available", "unknown", "missing"}
+ENVIRONMENT_PROVISIONING = {"existing-only", "isolated-open-source"}
+SOURCE_KINDS = {"paper", "official-code", "third-party-code", "dataset", "documentation", "skill"}
+ACCESS_STATES = {"local", "downloadable", "login-required", "request-required", "controlled", "unavailable", "not-found"}
+LICENSE_STATES = {"verified", "declared", "unknown", "restricted"}
+REQUIREMENT_CATEGORIES = ["input", "method", "protocol", "validation", "environment"]
 REQUIREMENT_STATES = {"verified", "derivable", "assumable", "missing", "not-required"}
 ROUTE_STATES = {"ready", "conditional", "blocked"}
+CONFIDENCE_LEVELS = {"high", "medium", "low"}
+ORIGINS = {"paper", "code", "derived", "assumption", "user"}
+VALIDATION_KINDS = {
+    "qualitative-pattern",
+    "quantitative",
+    "comparative",
+    "structural",
+    "visual-fidelity",
+}
 CANONICAL_AUTOMATIC_EFFECTS = frozenset({"run-local-code", "create-workspace-files"})
 CANONICAL_GATED_EFFECTS = frozenset({
     "network",
@@ -94,6 +109,18 @@ def string_list(value: object, label: str, *, ids: bool = False, max_items: int 
     return value
 
 
+def non_empty_string(value: object, label: str, *, max_length: int = 20000) -> str:
+    require(isinstance(value, str) and value.strip(), f"{label} must be a non-empty string")
+    require(len(value) <= max_length, f"{label} exceeds {max_length} characters")
+    return value
+
+
+def evidence_refs(value: object, label: str, source_ids: set[str]) -> list[str]:
+    refs = string_list(value, label, ids=True)
+    require(set(refs) <= source_ids, f"{label} contains an unknown source reference")
+    return refs
+
+
 def finite_number(value: object, label: str, *, integer: bool = False, nullable: bool = False) -> int | float | None:
     if value is None and nullable:
         return None
@@ -128,6 +155,55 @@ def validate_estimate(value: object, route_id: str, effects: set[str]) -> None:
     require(not cost or "payment" in effects, f"{route_id}: a positive cost estimate requires the payment effect")
     if effects & NETWORK_DEPENDENT_EFFECTS:
         require("network" in effects, f"{route_id}: external effects also require the network effect")
+
+
+def validate_parameter_spec(parameter: dict, route_id: str) -> None:
+    parameter_id = parameter["parameterId"]
+    kind = parameter.get("type")
+    require(kind in {"string", "number", "integer", "boolean", "enum", "relative-path"}, f"{route_id}: unsupported parameter type")
+    require(isinstance(parameter.get("required"), bool), f"{route_id}: parameter required must be boolean")
+    require(parameter.get("origin") in ORIGINS, f"{route_id}: invalid parameter origin")
+    if "unit" in parameter:
+        non_empty_string(parameter["unit"], f"{parameter_id}: unit", max_length=128)
+
+    minimum = maximum = None
+    if kind in {"number", "integer"}:
+        if "min" in parameter:
+            minimum = finite_number(parameter["min"], f"{parameter_id}: min", integer=kind == "integer")
+        if "max" in parameter:
+            maximum = finite_number(parameter["max"], f"{parameter_id}: max", integer=kind == "integer")
+        if minimum is not None and maximum is not None:
+            require(minimum <= maximum, f"{parameter_id}: min must not exceed max")
+    else:
+        require("min" not in parameter and "max" not in parameter, f"{parameter_id}: min/max require a numeric type")
+
+    choices: list[str] | None = None
+    if kind == "enum":
+        choices = string_list(parameter.get("enum"), f"{parameter_id}: enum", max_items=256)
+        require(bool(choices), f"{parameter_id}: enum must not be empty")
+    else:
+        require("enum" not in parameter, f"{parameter_id}: enum values require enum type")
+
+    if "default" not in parameter:
+        return
+    default = parameter["default"]
+    if kind == "string":
+        require(isinstance(default, str) and len(default) <= 4096, f"{parameter_id}: invalid string default")
+    elif kind == "relative-path":
+        require(isinstance(default, str) and safe_relative(default), f"{parameter_id}: unsafe relative-path default")
+    elif kind == "boolean":
+        require(isinstance(default, bool), f"{parameter_id}: invalid boolean default")
+    elif kind == "integer":
+        finite_number(default, f"{parameter_id}: default", integer=True)
+    elif kind == "number":
+        finite_number(default, f"{parameter_id}: default")
+    elif kind == "enum":
+        require(isinstance(default, str) and choices is not None and default in choices, f"{parameter_id}: default is not an enum choice")
+    if kind in {"number", "integer"}:
+        if minimum is not None:
+            require(default >= minimum, f"{parameter_id}: default is below min")
+        if maximum is not None:
+            require(default <= maximum, f"{parameter_id}: default is above max")
 
 
 def safe_relative(value: str) -> bool:
@@ -185,12 +261,12 @@ def validate_url(value: object, label: str) -> None:
         require(SENSITIVE_QUERY_KEY.fullmatch(key) is None, f"{label} must not contain a sensitive query parameter")
 
 
-def validate_report(report: dict) -> None:
+def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
     allow_keys(report, {
         "schemaVersion", "reportId", "generatedAt", "generator", "workflow", "integrity",
         "paper", "summary", "environment", "sources", "figures", "approvalPolicy",
     }, "report")
-    require(report.get("schemaVersion") == "reprofig.report/v1", "unsupported schemaVersion")
+    require(report.get("schemaVersion") == "reprofig.report/v2", "unsupported schemaVersion; regenerate legacy reports with the current ReproFig skill")
     require(isinstance(report.get("reportId"), str) and ID_PATTERN.fullmatch(report["reportId"]), "invalid reportId")
     workflow = report.get("workflow", {})
     allow_keys(workflow, {"stage", "executionAllowed", "approvalRequired"}, "workflow")
@@ -208,18 +284,48 @@ def validate_report(report: dict) -> None:
     environment_ids = unique_ids(environments, "environmentId", "environment")
     source_ids = unique_ids(sources, "sourceId", "source")
     unique_ids(figures, "figureId", "figure")
-    allow_keys(report.get("generator", {}), {"name", "version"}, "generator")
-    allow_keys(report.get("integrity", {}), {"algorithm", "canonicalization", "reportSha256"}, "integrity")
-    allow_keys(report.get("paper", {}), {"paperId", "title", "doi", "citation", "sourcePath"}, "paper")
-    allow_keys(report.get("summary", {}), {"overallLevel", "oneLine", "figureCount"}, "summary")
+    generator = allow_keys(report.get("generator", {}), {"name", "version"}, "generator")
+    integrity = allow_keys(report.get("integrity", {}), {"algorithm", "canonicalization", "reportSha256"}, "integrity")
+    paper = allow_keys(report.get("paper", {}), {"paperId", "title", "doi", "citation", "sourcePath"}, "paper")
+    summary = allow_keys(report.get("summary", {}), {"objective", "overallLevel", "oneLine", "figureCount"}, "summary")
+    non_empty_string(generator.get("name"), "generator.name", max_length=256)
+    non_empty_string(generator.get("version"), "generator.version", max_length=128)
+    require(integrity.get("algorithm") in {None, "sha256"}, "integrity.algorithm must be sha256 when declared")
+    require(integrity.get("canonicalization") in {None, "json-sort-keys-v1"}, "unsupported integrity canonicalization")
+    non_empty_string(paper.get("paperId"), "paper.paperId", max_length=512)
+    non_empty_string(paper.get("title"), "paper.title")
+    non_empty_string(paper.get("citation"), "paper.citation")
+    non_empty_string(summary.get("objective"), "summary.objective")
+    require(summary.get("overallLevel") in LEVELS | {"mixed"}, "summary.overallLevel must be a reproduction level or mixed")
+    non_empty_string(summary.get("oneLine"), "summary.oneLine")
     for environment in environments:
-        allow_keys(environment, {"environmentId", "label", "status", "version", "detail", "evidenceRefs"}, f"environment {environment.get('environmentId')}")
+        allow_keys(environment, {"environmentId", "label", "status", "provisioning", "version", "detail", "evidenceRefs"}, f"environment {environment.get('environmentId')}")
+        non_empty_string(environment.get("label"), f"environment {environment['environmentId']} label", max_length=1024)
+        require(environment.get("status") in ENVIRONMENT_STATES, f"environment {environment['environmentId']}: invalid status")
+        require(
+            environment.get("provisioning") in ENVIRONMENT_PROVISIONING,
+            f"environment {environment['environmentId']}: invalid provisioning policy",
+        )
+        if environment.get("version") is not None:
+            non_empty_string(environment["version"], f"environment {environment['environmentId']} version", max_length=256)
+        if environment.get("detail") is not None:
+            non_empty_string(environment["detail"], f"environment {environment['environmentId']} detail")
         refs = string_list(environment.get("evidenceRefs", []), f"environment {environment['environmentId']} evidenceRefs", ids=True)
         require(set(refs) <= source_ids, f"environment {environment['environmentId']}: unknown evidence source")
     for source in sources:
         allow_keys(source, {"sourceId", "kind", "title", "publisher", "url", "access", "license", "artifact", "note"}, f"source {source.get('sourceId')}")
-        allow_keys(source.get("access", {}), {"state", "checkedAt", "httpStatus", "note"}, f"source {source['sourceId']} access")
-        allow_keys(source.get("license", {}), {"state", "spdxId", "name", "url"}, f"source {source['sourceId']} license")
+        require(source.get("kind") in SOURCE_KINDS, f"source {source['sourceId']}: invalid kind")
+        non_empty_string(source.get("title"), f"source {source['sourceId']} title", max_length=1024)
+        if source.get("publisher") is not None:
+            non_empty_string(source["publisher"], f"source {source['sourceId']} publisher", max_length=1024)
+        access = allow_keys(source.get("access", {}), {"state", "checkedAt", "httpStatus", "note"}, f"source {source['sourceId']} access")
+        require(access.get("state") in ACCESS_STATES, f"source {source['sourceId']}: invalid access state")
+        non_empty_string(access.get("checkedAt"), f"source {source['sourceId']} checkedAt", max_length=64)
+        if access.get("httpStatus") is not None:
+            status = finite_number(access["httpStatus"], f"source {source['sourceId']} httpStatus", integer=True)
+            require(100 <= status <= 599, f"source {source['sourceId']}: invalid HTTP status")
+        license_info = allow_keys(source.get("license", {}), {"state", "spdxId", "name", "url"}, f"source {source['sourceId']} license")
+        require(license_info.get("state") in LICENSE_STATES, f"source {source['sourceId']}: invalid license state")
         if source.get("artifact") is not None:
             allow_keys(source["artifact"], {"sourcePath", "relativePath", "fileName", "mediaType", "sizeBytes", "sha256"}, f"source {source['sourceId']} artifact")
         validate_url(source.get("url"), f"source {source['sourceId']} URL")
@@ -242,32 +348,156 @@ def validate_report(report: dict) -> None:
     route_ids_global: set[str] = set()
     for figure in figures:
         figure_id = figure["figureId"]
-        allow_keys(figure, {"figureId", "label", "page", "section", "caption", "image", "role", "summary", "reproduction", "requirements", "routes", "sourceRefs"}, f"figure {figure_id}")
-        image = allow_keys(figure.get("image", {}), {"sourcePath", "relativePath", "redistributionAllowed", "mediaType", "width", "height", "sizeBytes", "sha256", "metadataStripped"}, f"{figure_id} image")
+        figure_fields = {
+            "figureId", "label", "page", "section", "caption", "image", "understanding",
+            "generationLogic", "validationTargets", "reproduction", "requirements", "routes", "sourceRefs",
+        }
+        allow_keys(figure, figure_fields, f"figure {figure_id}")
+        require(set(figure) == figure_fields, f"{figure_id}: figure must declare all scientific report fields")
+        non_empty_string(figure.get("label"), f"{figure_id} label", max_length=256)
+        non_empty_string(figure.get("caption"), f"{figure_id} caption")
+        if figure.get("section") is not None:
+            non_empty_string(figure["section"], f"{figure_id} section", max_length=1024)
+
+        source_refs = evidence_refs(figure.get("sourceRefs"), f"{figure_id} sourceRefs", source_ids)
+        require(bool(source_refs), f"{figure_id}: at least one figure source reference is required")
+
+        image = allow_keys(figure.get("image", {}), {"sourcePath", "relativePath", "sourceRef", "redistributionAllowed", "mediaType", "width", "height", "sizeBytes", "sha256", "metadataStripped"}, f"{figure_id} image")
+        if image.get("sourceRef") is not None:
+            require(image["sourceRef"] in source_ids, f"{figure_id}: image sourceRef does not resolve")
         if image.get("mediaType") is not None:
             require(image["mediaType"] == "image/png", f"{figure_id}: only image/png figure assets are supported")
         if image.get("sourcePath") is not None:
-            require(isinstance(image["sourcePath"], str) and image["sourcePath"], f"{figure_id}: image sourcePath must be a non-empty string")
+            non_empty_string(image["sourcePath"], f"{figure_id} image sourcePath")
             require(image.get("mediaType") == "image/png", f"{figure_id}: bundled figure assets must declare mediaType image/png")
-        reproduction = figure.get("reproduction", {})
-        allow_keys(reproduction, {"level", "verdict", "confidence", "assessment", "recommendedRouteId"}, f"{figure_id} reproduction")
+            require(image.get("relativePath") is None, f"{figure_id}: relativePath is builder output and cannot accompany sourcePath")
+        elif allow_built_assets and image.get("relativePath") is not None:
+            require(safe_relative(image["relativePath"]), f"{figure_id}: unsafe built image relativePath")
+            require(image["relativePath"] == f"assets/{figure_id}.png", f"{figure_id}: built image path must be assets/{figure_id}.png")
+            require(image.get("mediaType") == "image/png", f"{figure_id}: built figure assets must declare mediaType image/png")
+            require(isinstance(image.get("sizeBytes"), int) and image["sizeBytes"] > 0, f"{figure_id}: built image sizeBytes is invalid")
+            require(isinstance(image.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", image["sha256"]), f"{figure_id}: built image SHA-256 is invalid")
+            require(image.get("metadataStripped") is True, f"{figure_id}: built image must record metadata stripping")
+        else:
+            require(image.get("relativePath") is None, f"{figure_id}: relativePath is builder output, not an input asset")
+            require(image.get("sourceRef") in source_ids, f"{figure_id}: an unbundled image requires a sourceRef")
+            source = next(item for item in sources if item["sourceId"] == image["sourceRef"])
+            require(source.get("url") is not None, f"{figure_id}: unbundled image sourceRef must provide a verified HTTPS URL")
+            require(
+                source.get("access", {}).get("state") not in {"not-found", "unavailable"},
+                f"{figure_id}: unbundled image source is not currently accessible",
+            )
+
+        understanding_fields = {
+            "visualSummary", "observations", "paperClaim", "evidenceRole", "authorInterpretation", "limitations",
+        }
+        understanding = allow_keys(figure.get("understanding", {}), understanding_fields, f"{figure_id} understanding")
+        require(set(understanding) == understanding_fields, f"{figure_id}: understanding must declare {sorted(understanding_fields)}")
+        non_empty_string(understanding.get("visualSummary"), f"{figure_id} visualSummary")
+        non_empty_string(understanding.get("paperClaim"), f"{figure_id} paperClaim")
+        non_empty_string(understanding.get("evidenceRole"), f"{figure_id} evidenceRole")
+        non_empty_string(understanding.get("authorInterpretation"), f"{figure_id} authorInterpretation")
+        string_list(understanding.get("limitations"), f"{figure_id} limitations", max_items=32)
+
+        observations = understanding.get("observations")
+        require(isinstance(observations, list) and 1 <= len(observations) <= 32, f"{figure_id}: 1-32 observations are required")
+        observation_ids = unique_ids(observations, "observationId", f"{figure_id} observation")
+        observation_fields = {"observationId", "location", "statement", "confidence", "evidenceRefs"}
+        for observation in observations:
+            observation_id = observation["observationId"]
+            allow_keys(observation, observation_fields, f"observation {observation_id}")
+            require(set(observation) == observation_fields, f"{observation_id}: observation fields are incomplete")
+            non_empty_string(observation.get("location"), f"{observation_id} location", max_length=1024)
+            non_empty_string(observation.get("statement"), f"{observation_id} statement")
+            require(observation.get("confidence") in CONFIDENCE_LEVELS, f"{observation_id}: invalid confidence")
+            refs = evidence_refs(observation.get("evidenceRefs"), f"{observation_id} evidenceRefs", source_ids)
+            require(bool(refs), f"{observation_id}: at least one evidence reference is required")
+
+        generation_fields = {"inputs", "steps", "plotMapping", "unknowns"}
+        generation = allow_keys(figure.get("generationLogic", {}), generation_fields, f"{figure_id} generationLogic")
+        require(set(generation) == generation_fields, f"{figure_id}: generationLogic must declare {sorted(generation_fields)}")
+        generation_inputs = generation.get("inputs")
+        require(isinstance(generation_inputs, list) and 1 <= len(generation_inputs) <= 32, f"{figure_id}: 1-32 generation inputs are required")
+        input_ids = unique_ids(generation_inputs, "inputId", f"{figure_id} generation input")
+        input_fields = {"inputId", "label", "description", "origin", "evidenceRefs"}
+        for generation_input in generation_inputs:
+            input_id = generation_input["inputId"]
+            allow_keys(generation_input, input_fields, f"generation input {input_id}")
+            require(set(generation_input) == input_fields, f"{input_id}: generation input fields are incomplete")
+            non_empty_string(generation_input.get("label"), f"{input_id} label", max_length=1024)
+            non_empty_string(generation_input.get("description"), f"{input_id} description")
+            require(generation_input.get("origin") in ORIGINS, f"{input_id}: invalid origin")
+            refs = evidence_refs(generation_input.get("evidenceRefs"), f"{input_id} evidenceRefs", source_ids)
+            require(bool(refs), f"{input_id}: at least one evidence reference is required")
+
+        generation_steps = generation.get("steps")
+        require(isinstance(generation_steps, list) and 1 <= len(generation_steps) <= 64, f"{figure_id}: 1-64 generation steps are required")
+        step_ids = unique_ids(generation_steps, "stepId", f"{figure_id} generation step")
+        require(not (input_ids & step_ids), f"{figure_id}: generation input and step IDs must be distinct")
+        step_fields = {"stepId", "label", "description", "origin", "evidenceRefs"}
+        for step in generation_steps:
+            step_id = step["stepId"]
+            allow_keys(step, step_fields, f"generation step {step_id}")
+            require(set(step) == step_fields, f"{step_id}: generation step fields are incomplete")
+            non_empty_string(step.get("label"), f"{step_id} label", max_length=1024)
+            non_empty_string(step.get("description"), f"{step_id} description")
+            require(step.get("origin") in ORIGINS, f"{step_id}: invalid origin")
+            refs = evidence_refs(step.get("evidenceRefs"), f"{step_id} evidenceRefs", source_ids)
+            require(bool(refs), f"{step_id}: at least one evidence reference is required")
+
+        plot_fields = {"description", "encodings", "evidenceRefs"}
+        plot_mapping = allow_keys(generation.get("plotMapping", {}), plot_fields, f"{figure_id} plotMapping")
+        require(set(plot_mapping) == plot_fields, f"{figure_id}: plotMapping fields are incomplete")
+        non_empty_string(plot_mapping.get("description"), f"{figure_id} plotMapping description")
+        string_list(plot_mapping.get("encodings"), f"{figure_id} plot encodings", max_items=32)
+        refs = evidence_refs(plot_mapping.get("evidenceRefs"), f"{figure_id} plotMapping evidenceRefs", source_ids)
+        require(bool(refs), f"{figure_id}: plotMapping requires at least one evidence reference")
+        string_list(generation.get("unknowns"), f"{figure_id} generation unknowns", max_items=32)
+
+        validation_targets = figure.get("validationTargets")
+        require(isinstance(validation_targets, list) and 1 <= len(validation_targets) <= 32, f"{figure_id}: 1-32 validation targets are required")
+        validation_target_ids = unique_ids(validation_targets, "targetId", f"{figure_id} validation target")
+        validation_fields = {"targetId", "label", "kind", "origin", "observable", "criterion", "supportsClaim", "evidenceRefs"}
+        for target in validation_targets:
+            target_id = target["targetId"]
+            allow_keys(target, validation_fields, f"validation target {target_id}")
+            require(set(target) == validation_fields, f"{target_id}: validation target fields are incomplete")
+            non_empty_string(target.get("label"), f"{target_id} label", max_length=1024)
+            require(target.get("kind") in VALIDATION_KINDS, f"{target_id}: invalid validation kind")
+            require(target.get("origin") in ORIGINS, f"{target_id}: invalid validation origin")
+            non_empty_string(target.get("observable"), f"{target_id} observable")
+            non_empty_string(target.get("criterion"), f"{target_id} criterion")
+            non_empty_string(target.get("supportsClaim"), f"{target_id} supportsClaim")
+            refs = evidence_refs(target.get("evidenceRefs"), f"{target_id} evidenceRefs", source_ids)
+            require(bool(refs), f"{target_id}: at least one evidence reference is required")
+
+        reproduction_fields = {"level", "verdict", "confidence", "assessment", "recommendedRouteId"}
+        reproduction = allow_keys(figure.get("reproduction", {}), reproduction_fields, f"{figure_id} reproduction")
+        require(set(reproduction) == reproduction_fields, f"{figure_id}: reproduction fields are incomplete")
         require(reproduction.get("level") in LEVELS, f"{figure_id}: invalid reproduction level")
-        require(reproduction.get("confidence") in {"high", "medium", "low"}, f"{figure_id}: invalid confidence")
-        require(isinstance(figure.get("summary"), str) and figure["summary"].strip(), f"{figure_id}: summary is required")
+        require(reproduction.get("confidence") in CONFIDENCE_LEVELS, f"{figure_id}: invalid confidence")
+        non_empty_string(reproduction.get("verdict"), f"{figure_id} reproduction verdict")
+        non_empty_string(reproduction.get("assessment"), f"{figure_id} reproduction assessment")
 
         requirements = figure.get("requirements", [])
-        require(isinstance(requirements, list) and len(requirements) == 5, f"{figure_id}: exactly five requirements are required")
+        require(isinstance(requirements, list) and 5 <= len(requirements) <= 80, f"{figure_id}: 5-80 route requirements are required")
         requirement_ids = unique_ids(requirements, "requirementId", f"{figure_id} requirement")
-        categories = [item.get("category") for item in requirements]
-        require(categories == REQUIREMENT_CATEGORIES, f"{figure_id}: requirement order must be {REQUIREMENT_CATEGORIES}")
+        requirement_fields = {"requirementId", "category", "label", "state", "blocking", "detail", "evidenceRefs"}
         for requirement in requirements:
-            allow_keys(requirement, {"requirementId", "category", "label", "state", "blocking", "detail", "evidenceRefs"}, f"{figure_id} requirement {requirement.get('requirementId')}")
+            requirement_id = requirement["requirementId"]
+            allow_keys(requirement, requirement_fields, f"{figure_id} requirement {requirement_id}")
+            require(set(requirement) == requirement_fields, f"{requirement_id}: requirement fields are incomplete")
+            non_empty_string(requirement.get("label"), f"{requirement_id} label", max_length=1024)
+            non_empty_string(requirement.get("detail"), f"{requirement_id} detail")
+            require(requirement.get("category") in REQUIREMENT_CATEGORIES, f"{requirement_id}: invalid requirement category")
             require(requirement.get("state") in REQUIREMENT_STATES, f"{figure_id}: invalid requirement state")
-            refs = string_list(requirement.get("evidenceRefs", []), f"{figure_id} requirement evidenceRefs", ids=True)
-            require(set(refs) <= source_ids, f"{figure_id}: unknown requirement evidence source")
+            require(isinstance(requirement.get("blocking"), bool), f"{requirement_id}: blocking must be boolean")
+            evidence_refs(requirement.get("evidenceRefs"), f"{requirement_id} evidenceRefs", source_ids)
+
+        requirements_by_id = {item["requirementId"]: item for item in requirements}
 
         routes = figure.get("routes", [])
-        require(isinstance(routes, list), f"{figure_id}: routes must be a list")
+        require(isinstance(routes, list) and 1 <= len(routes) <= 16, f"{figure_id}: 1-16 routes are required")
         route_ids = unique_ids(routes, "routeId", f"{figure_id} route")
         require(not (route_ids_global & route_ids), "route IDs must be unique across the report")
         route_ids_global |= route_ids
@@ -277,37 +507,131 @@ def validate_report(report: dict) -> None:
         elif reproduction.get("level") != "original-case-blocked":
             raise ReportError(f"{figure_id}: a recommended route is required")
 
+        recommended_flags: set[str] = set()
+        route_fields = {
+            "routeId", "label", "status", "recommended", "scientificScope", "engine", "environmentIds",
+            "requirementIds", "deliverables", "parameters", "effects", "estimated", "plan", "blockers",
+        }
+        scope_fields = {
+            "goal", "reproducesObservationIds", "claimCoverage", "doesNotReproduce", "substitutions",
+            "assumptions", "validationTargetIds", "recommendationRationale",
+        }
         for route in routes:
             route_id = route["routeId"]
-            allow_keys(route, {"routeId", "label", "status", "recommended", "engine", "environmentIds", "requirementIds", "deliverables", "parameters", "effects", "estimated", "plan", "blockers"}, f"route {route_id}")
+            allow_keys(route, route_fields, f"route {route_id}")
+            require(set(route) == route_fields, f"{route_id}: route fields are incomplete")
+            non_empty_string(route.get("label"), f"{route_id} label", max_length=1024)
             require(route.get("status") in ROUTE_STATES, f"{route_id}: invalid route status")
+            require(isinstance(route.get("recommended"), bool), f"{route_id}: recommended must be boolean")
+            if route["recommended"]:
+                recommended_flags.add(route_id)
             if route_id == recommended:
                 require(route.get("status") != "blocked", f"{route_id}: recommended route cannot be blocked")
-            string_list(route.get("plan", []), f"{route_id} plan", max_items=5)
-            string_list(route.get("blockers", []), f"{route_id} blockers", max_items=32)
+
+            scope = allow_keys(route.get("scientificScope", {}), scope_fields, f"{route_id} scientificScope")
+            require(set(scope) == scope_fields, f"{route_id}: scientificScope fields are incomplete")
+            non_empty_string(scope.get("goal"), f"{route_id} scientific goal")
+            non_empty_string(scope.get("claimCoverage"), f"{route_id} claimCoverage")
+            non_empty_string(scope.get("recommendationRationale"), f"{route_id} recommendationRationale")
+            reproduced_observations = string_list(scope.get("reproducesObservationIds"), f"{route_id} reproducesObservationIds", ids=True, max_items=32)
+            target_refs = string_list(scope.get("validationTargetIds"), f"{route_id} validationTargetIds", ids=True, max_items=32)
+            require(set(reproduced_observations) <= observation_ids, f"{route_id}: unknown observation in scientific scope")
+            require(set(target_refs) <= validation_target_ids, f"{route_id}: unknown validation target in scientific scope")
+            string_list(scope.get("doesNotReproduce"), f"{route_id} doesNotReproduce", max_items=32)
+            string_list(scope.get("substitutions"), f"{route_id} substitutions", max_items=32)
+            string_list(scope.get("assumptions"), f"{route_id} assumptions", max_items=32)
+            if route["status"] != "blocked":
+                require(bool(reproduced_observations), f"{route_id}: a non-blocked route must reproduce at least one observation")
+                require(bool(target_refs), f"{route_id}: a non-blocked route must select at least one validation target")
+
+            plan = string_list(route.get("plan"), f"{route_id} plan", max_items=5)
+            blockers = string_list(route.get("blockers"), f"{route_id} blockers", max_items=32)
+            if route["status"] == "blocked":
+                require(bool(blockers), f"{route_id}: a blocked route must explain at least one blocker")
+            else:
+                require(bool(plan), f"{route_id}: a non-blocked route needs an execution plan")
+                require(not blockers, f"{route_id}: a non-blocked route cannot declare blockers")
             require(not any(key in route for key in ("command", "commands", "shell", "script")), f"{route_id}: executable commands are forbidden in reports")
-            environment_refs = string_list(route.get("environmentIds", []), f"{route_id} environmentIds", ids=True)
-            requirement_refs = string_list(route.get("requirementIds", []), f"{route_id} requirementIds", ids=True)
+            non_empty_string(route.get("engine"), f"{route_id} engine", max_length=1024)
+            environment_refs = string_list(route.get("environmentIds"), f"{route_id} environmentIds", ids=True)
+            requirement_refs = string_list(route.get("requirementIds"), f"{route_id} requirementIds", ids=True)
             require(set(environment_refs) <= environment_ids, f"{route_id}: unknown environment reference")
             require(set(requirement_refs) <= requirement_ids, f"{route_id}: unknown requirement reference")
-            effects = set(string_list(route.get("effects", []), f"{route_id} effects", ids=True))
+            require(len(requirement_refs) == 5, f"{route_id}: exactly five route requirements are required")
+            require(
+                [requirements_by_id[requirement_id]["category"] for requirement_id in requirement_refs] == REQUIREMENT_CATEGORIES,
+                f"{route_id}: requirement order must be {REQUIREMENT_CATEGORIES}",
+            )
+            if route["status"] != "blocked":
+                require(
+                    not any(requirements_by_id[requirement_id]["blocking"] for requirement_id in requirement_refs),
+                    f"{route_id}: a non-blocked route cannot reference a blocking requirement",
+                )
+            referenced_requirement_states = {
+                requirements_by_id[requirement_id]["state"] for requirement_id in requirement_refs
+            }
+            effects = set(string_list(route.get("effects"), f"{route_id} effects", ids=True))
             require(effects <= CANONICAL_EFFECTS, f"{route_id}: unknown canonical effect")
             require(effects <= allowed_effects | consent_effects, f"{route_id}: undeclared effect")
-            deliverables = route.get("deliverables", [])
+            referenced_environments = [
+                environment for environment in environments if environment["environmentId"] in environment_refs
+            ]
+            referenced_environment_states = {environment["status"] for environment in referenced_environments}
+            if route["status"] == "ready":
+                require(
+                    referenced_requirement_states <= {"verified", "not-required"},
+                    f"{route_id}: a ready route cannot depend on derivation, assumptions, or missing conditions",
+                )
+                require(
+                    referenced_environment_states <= {"verified"},
+                    f"{route_id}: a ready route requires route-level verified environments",
+                )
+            elif route["status"] == "conditional":
+                unresolved_environments = [
+                    environment
+                    for environment in referenced_environments
+                    if environment["status"] in {"unknown", "missing"}
+                ]
+                require(
+                    not any(environment["provisioning"] == "existing-only" for environment in unresolved_environments),
+                    f"{route_id}: an unknown or missing existing-only environment makes the route blocked",
+                )
+                if unresolved_environments:
+                    require(
+                        "install" in effects,
+                        f"{route_id}: an unknown or missing isolated open-source environment requires an explicit install effect",
+                    )
+
+            deliverables = route.get("deliverables")
             require(isinstance(deliverables, list), f"{route_id}: deliverables must be a list")
+            if route["status"] != "blocked":
+                require(bool(deliverables), f"{route_id}: a non-blocked route must declare deliverables")
+            deliverable_fields = {"kind", "extension", "label"}
+            deliverable_kinds: list[str] = []
             for deliverable in deliverables:
-                allow_keys(deliverable, {"kind", "extension", "label"}, f"{route_id} deliverable")
-            parameters = route.get("parameters", [])
+                allow_keys(deliverable, deliverable_fields, f"{route_id} deliverable")
+                require(set(deliverable) == deliverable_fields, f"{route_id}: deliverable fields are incomplete")
+                kind = non_empty_string(deliverable.get("kind"), f"{route_id} deliverable kind", max_length=128)
+                deliverable_kinds.append(kind)
+                extension = non_empty_string(deliverable.get("extension"), f"{route_id} deliverable extension", max_length=32)
+                require(extension.startswith(".") and "/" not in extension and "\\" not in extension, f"{route_id}: unsafe deliverable extension")
+                non_empty_string(deliverable.get("label"), f"{route_id} deliverable label", max_length=1024)
+            require(len(deliverable_kinds) == len(set(deliverable_kinds)), f"{route_id}: duplicate deliverable kind")
+
+            parameters = route.get("parameters")
             require(isinstance(parameters, list), f"{route_id}: parameters must be a list")
+            parameter_ids = unique_ids(parameters, "parameterId", f"{route_id} parameter") if parameters else set()
+            parameter_fields = {"parameterId", "label", "type", "required", "default", "enum", "min", "max", "unit", "origin"}
             for parameter in parameters:
-                allow_keys(parameter, {"parameterId", "label", "type", "required", "default", "enum", "min", "max", "unit", "origin"}, f"{route_id} parameter")
-                require(parameter.get("type") in {"string", "number", "integer", "boolean", "enum", "relative-path"}, f"{route_id}: unsupported parameter type")
-                require(isinstance(parameter.get("parameterId"), str) and ID_PATTERN.fullmatch(parameter["parameterId"]), f"{route_id}: invalid parameter ID")
+                allow_keys(parameter, parameter_fields, f"{route_id} parameter")
+                require(parameter["parameterId"] in parameter_ids, f"{route_id}: invalid parameter ID")
                 require(SENSITIVE_KEY.search(parameter["parameterId"]) is None, f"{route_id}: sensitive parameter IDs are forbidden")
+                non_empty_string(parameter.get("label"), f"{route_id} parameter label", max_length=1024)
+                validate_parameter_spec(parameter, route_id)
             validate_estimate(route.get("estimated"), route_id, effects)
 
-        source_refs = string_list(figure.get("sourceRefs", []), f"{figure_id} sourceRefs", ids=True)
-        require(set(source_refs) <= source_ids, f"{figure_id}: unknown source reference")
+        expected_flags = {recommended} if recommended is not None else set()
+        require(recommended_flags == expected_flags, f"{figure_id}: recommended flags must match recommendedRouteId")
 
 
 def sha256_file(path: Path) -> str:
@@ -326,33 +650,58 @@ def is_within(path: Path, root: Path) -> bool:
         return False
 
 
-def sanitize_png(source: Path, destination: Path) -> None:
-    payload = source.read_bytes()
+def png_chunks(payload: bytes, name: str) -> list[tuple[bytes, int, int]]:
     signature = b"\x89PNG\r\n\x1a\n"
-    require(payload.startswith(signature), f"{source.name}: extension does not match PNG content")
-    output = bytearray(signature)
+    require(payload.startswith(signature), f"{name}: extension does not match PNG content")
     offset = len(signature)
     seen_ihdr = False
     seen_iend = False
-    # Keep critical image chunks plus transparency; discard text, time, EXIF,
-    # color profiles, and animation metadata that can carry identifying data.
-    allowed = {b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS"}
+    seen_idat = False
+    chunks: list[tuple[bytes, int, int]] = []
     while offset + 12 <= len(payload):
         length = int.from_bytes(payload[offset:offset + 4], "big")
         end = offset + 12 + length
-        require(end <= len(payload), f"{source.name}: malformed PNG chunk")
+        require(end <= len(payload), f"{name}: malformed PNG chunk")
         kind = payload[offset + 4:offset + 8]
+        data_end = offset + 8 + length
+        expected_crc = int.from_bytes(payload[data_end:data_end + 4], "big")
+        actual_crc = zlib.crc32(payload[offset + 4:data_end]) & 0xFFFFFFFF
+        require(actual_crc == expected_crc, f"{name}: invalid PNG chunk checksum")
         if kind == b"IHDR":
-            require(not seen_ihdr and length == 13, f"{source.name}: invalid PNG header")
+            require(not seen_ihdr and not chunks and length == 13, f"{name}: invalid PNG header")
             seen_ihdr = True
-        if kind in allowed:
-            output.extend(payload[offset:end])
+        if kind == b"IDAT":
+            seen_idat = True
+        chunks.append((kind, offset, end))
         if kind == b"IEND":
+            require(length == 0, f"{name}: invalid PNG end chunk")
             seen_iend = True
+            require(end == len(payload), f"{name}: trailing bytes after PNG end chunk")
             break
         offset = end
-    require(seen_ihdr and seen_iend, f"{source.name}: incomplete PNG")
+    require(seen_ihdr and seen_idat and seen_iend, f"{name}: incomplete PNG")
+    return chunks
+
+
+def sanitize_png(source: Path, destination: Path) -> None:
+    payload = source.read_bytes()
+    output = bytearray(b"\x89PNG\r\n\x1a\n")
+    # Keep critical image chunks plus transparency; discard text, time, EXIF,
+    # color profiles, and animation metadata that can carry identifying data.
+    allowed = {b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS"}
+    for kind, start, end in png_chunks(payload, source.name):
+        if kind in allowed:
+            output.extend(payload[start:end])
     destination.write_bytes(bytes(output))
+
+
+def validate_sanitized_png(path: Path) -> None:
+    require(path.suffix.lower() == ".png", f"{path.name}: built figure asset must use .png")
+    require(path.is_file() and not path.is_symlink(), f"{path.name}: built figure asset is missing or symlinked")
+    require(path.stat().st_size <= MAX_ASSET_BYTES, f"{path.name}: built figure asset exceeds {MAX_ASSET_BYTES} bytes")
+    allowed = {b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS"}
+    chunks = png_chunks(path.read_bytes(), path.name)
+    require(all(kind in allowed for kind, _, _ in chunks), f"{path.name}: built figure asset contains unsanitized PNG metadata")
 
 
 def canonical_payload(report: dict) -> bytes:
