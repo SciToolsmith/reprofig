@@ -2,7 +2,7 @@
   "use strict";
 
   const report = window.__SCIREPRO_REPORT__ || window.__REPROFIG_REPORT__;
-  if (!report || report.schemaVersion !== "reprofig.report/v2") {
+  if (!report || report.schemaVersion !== "reprofig.report/v3") {
     document.body.textContent = "SciRepro 报告数据无效。";
     return;
   }
@@ -12,7 +12,33 @@
     "mechanism-reproduction": "机制可复现",
     "alternative-validation": "可替代验证",
     "editable-reconstruction": "可编辑重构",
+    "image-derived-reconstruction": "图像衍生重构",
     "original-case-blocked": "原案例受阻"
+  };
+  const acquisitionModeLabels = {
+    "paper-with-images": "论文与目标图像",
+    "paper-with-figure-references": "按论文图号提取",
+    "images-only": "仅目标图像"
+  };
+  const workflowModeLabels = {
+    "scientific-reproduction": "科学复现",
+    "image-derived-reconstruction": "图像衍生重构"
+  };
+  const audienceLabels = {
+    local: "本地研判版",
+    public: "公开分享版"
+  };
+  const qaStatusLabels = {
+    verified: "提取已核验",
+    "needs-review": "待人工核验",
+    passed: "核验通过",
+    failed: "核验未通过",
+    unknown: "核验状态未知"
+  };
+  const bundleStateLabels = {
+    "embedded-local": "本地报告已嵌入",
+    "embedded-public": "公开报告已嵌入",
+    "omitted-rights": "公开报告未分发图像"
   };
   const stateLabels = {
     verified: ["✓", "已核验"],
@@ -181,6 +207,28 @@
     return value && /\.png$/i.test(value) ? value : null;
   }
 
+  function workflowMode(figure) {
+    return (figure && figure.target && figure.target.workflowMode) || (figure && figure.workflowMode) || null;
+  }
+
+  function isImageDerived(figure) {
+    return workflowMode(figure) === "image-derived-reconstruction";
+  }
+
+  function targetCanBeApproved(figure) {
+    const bundleState = figure && figure.image && figure.image.bundleState;
+    return Boolean(
+      report.audience === "local" &&
+      figure &&
+      figure.target &&
+      typeof figure.target.targetSha256 === "string" &&
+      figure.target.targetSha256 &&
+      figure.image &&
+      bundleState === "embedded-local" &&
+      safeImagePath(figure.image)
+    );
+  }
+
   function safeParameterValue(spec, value) {
     if (sensitiveName.test(spec.parameterId || "")) return { valid: false };
     if (value === undefined || value === null || value === "") return { valid: !spec.required, value };
@@ -336,10 +384,20 @@
   }
 
   function initialize() {
-    document.getElementById("paper-title").textContent = report.paper.title;
+    const firstFigure = figures[0];
+    const imageOnly = firstFigure && isImageDerived(firstFigure) && !report.paper;
+    const audienceLabel = audienceLabels[report.audience] || "受众未声明";
+    document.getElementById("paper-title").textContent = report.paper ? report.paper.title : "目标图像重构研判";
     document.getElementById("report-summary").textContent = report.summary.objective;
+    const topbarTagline = document.querySelector(".topbar p");
+    if (topbarTagline) {
+      topbarTagline.textContent = "";
+      const audienceBadge = node("span", "audience-badge", audienceLabel);
+      audienceBadge.dataset.audience = report.audience || "unknown";
+      append(topbarTagline, node("span", "topbar-label", "读图 · 研判 · 验证"), audienceBadge);
+    }
     const meta = document.getElementById("report-meta");
-    [["报告", report.reportId], ["目标图", figures.length], ["总体研判", report.summary.oneLine]].forEach(([label, value]) => {
+    [["报告", report.reportId], ["目标图", figures.length], ["报告受众", audienceLabel], [imageOnly ? "工作模式" : "总体研判", imageOnly ? "图像衍生重构" : report.summary.oneLine]].forEach(([label, value]) => {
       const wrapper = node("div");
       append(wrapper, node("dt", null, label), node("dd", null, value));
       meta.appendChild(wrapper);
@@ -360,26 +418,22 @@
   function renderTabs() {
     const tabs = document.getElementById("figure-tabs");
     tabs.textContent = "";
-    tabs.style.setProperty("--figure-count", String(figures.length));
-    figures.forEach((figure) => {
+    figures.forEach((figure, index) => {
       const button = node("button", "figure-tab");
       button.type = "button";
+      button.dataset.figureId = figure.figureId;
+      button.dataset.omitted = figure.image && figure.image.bundleState === "omitted-rights" ? "true" : "false";
       button.setAttribute("aria-current", figure.figureId === currentFigureId ? "true" : "false");
+      button.setAttribute("aria-label", `${index + 1} / ${figures.length} · ${figure.label} · ${figure.understanding.visualSummary}`);
       button.addEventListener("click", () => {
         currentFigureId = figure.figureId;
-        renderTabs();
+        Array.from(tabs.children).forEach((tab) => {
+          tab.setAttribute("aria-current", tab.dataset.figureId === currentFigureId ? "true" : "false");
+        });
         renderDetail();
         document.getElementById("figure-detail").scrollIntoView({ behavior: "smooth", block: "start" });
       });
-      const imagePath = safeImagePath(figure.image);
-      if (imagePath) {
-        const image = node("img");
-        image.src = imagePath;
-        image.alt = "";
-        button.appendChild(image);
-      } else {
-        button.appendChild(node("div", "figure-placeholder", figure.label));
-      }
+      button.appendChild(node("span", "figure-tab-index", String(index + 1).padStart(2, "0")));
       const copy = node("span", "figure-tab-copy");
       append(copy,
         node("span", "figure-tab-label", `${figure.label} · ${levelLabels[figure.reproduction.level] || figure.reproduction.level}`),
@@ -403,33 +457,85 @@
 
     const header = node("header", "detail-head");
     append(header,
-      node("div", "detail-kicker", `${figure.label} · ${figure.section || "论文图"}`),
+      node("div", "detail-kicker", `${figure.label} · ${figure.section || (isImageDerived(figure) ? "目标图像" : "论文图")}`),
       node("h2", null, understanding.visualSummary),
       node("p", "caption", figure.caption)
     );
     const headerBadges = node("div", "header-badges");
     const levelBadge = node("span", "badge", levelLabels[figure.reproduction.level] || figure.reproduction.level);
     levelBadge.dataset.level = figure.reproduction.level;
-    append(headerBadges, levelBadge, node("span", "confidence-badge", confidenceLabels[figure.reproduction.confidence] || figure.reproduction.confidence));
+    append(headerBadges,
+      levelBadge,
+      node("span", "confidence-badge", confidenceLabels[figure.reproduction.confidence] || figure.reproduction.confidence),
+      node("span", "workflow-badge", workflowModeLabels[workflowMode(figure)] || workflowMode(figure) || "工作模式未声明")
+    );
     header.appendChild(headerBadges);
     root.appendChild(header);
 
-    const readingSection = node("section", "content-section reading-section");
-    readingSection.appendChild(sectionHeading("01", "读图", "先区分图上可直接观察到的现象，再进入论文解释。"));
-    const grid = node("div", "reading-grid");
-    const paper = node("figure", "figure-paper");
+    const target = figure.target || {};
+    const materialization = target.materialization || {};
     const imagePath = safeImagePath(figure.image);
+    const targetSection = node("section", "content-section target-section");
+    targetSection.appendChild(sectionHeading("00", "复现对象", "先确认本次分析绑定的是哪一张原图，再阅读解释与候选路线。"));
+    const targetLayout = node("div", "target-layout");
+    const targetVisual = node("figure", "target-visual");
     if (imagePath) {
-      const image = node("img");
-      image.src = imagePath;
-      image.alt = `${figure.label}: ${figure.caption || understanding.visualSummary}`;
-      paper.appendChild(image);
+      const targetImage = node("img");
+      targetImage.src = imagePath;
+      targetImage.alt = `${figure.label}: ${figure.caption || understanding.visualSummary}`;
+      targetImage.decoding = "async";
+      targetVisual.appendChild(targetImage);
+      targetVisual.appendChild(node("figcaption", null, figure.caption || understanding.visualSummary));
+    } else if (figure.image && figure.image.bundleState === "omitted-rights") {
+      const notice = node("div", "target-rights-notice");
+      append(notice,
+        node("span", "target-rights-icon", "○"),
+        node("strong", null, "公开版未分发目标图像"),
+        node("p", null, "该图只用于本地研判，未获得再分发许可。请回到本地报告核对原图；当前目标不能导出执行批准单。")
+      );
+      targetVisual.appendChild(notice);
     } else {
-      paper.appendChild(node("p", "figure-placeholder", "本报告未捆绑原图。"));
-      const imageSource = sourceAnchor(sourcesById.get(figure.image && figure.image.sourceRef), "source-link");
-      if (imageSource) paper.appendChild(imageSource);
+      targetVisual.appendChild(node("p", "figure-placeholder", "目标图像未被嵌入；请检查第 0 阶段图像物化结果。"));
     }
-    const observationPanel = node("div", "observation-panel");
+    const targetFacts = node("div", "target-facts");
+    const workflow = workflowModeLabels[target.workflowMode] || target.workflowMode || "未声明";
+    const acquisition = acquisitionModeLabels[target.acquisitionMode] || target.acquisitionMode || "未声明";
+    const materializedPage = materialization.page === undefined ? target.paperPage : materialization.page;
+    const renderDpi = materialization.renderDpi || target.dpi;
+    const captionIncluded = materialization.captionIncluded === undefined ? target.captionIncluded : materialization.captionIncluded;
+    const qaStatus = materialization.qaStatus || target.qaStatus;
+    const sourceFileName = materialization.sourceFileName || target.sourceFileName;
+    const pageText = materializedPage === undefined || materializedPage === null ? "—" : `PDF 第 ${materializedPage} 页`;
+    const dpiText = renderDpi ? `${renderDpi} DPI` : "原始图像";
+    const captionText = captionIncluded === true ? "包含原始图注" : captionIncluded === false ? "未包含原始图注" : "图注状态未知";
+    const factGrid = node("dl", "target-fact-grid");
+    [
+      ["获取方式", acquisition],
+      ["工作模式", workflow],
+      ["请求对象", target.requestedRef || target.requestedAs || target.figureReference || figure.label],
+      ["来源位置", pageText],
+      ["物化方式", materialization.method || (target.acquisitionMode === "paper-with-figure-references" ? "PDF 高分辨率渲染与裁切" : "目标图像规范化")],
+      ["图像规格", `${dpiText} · ${captionText}`],
+      ["质量核验", qaStatusLabels[qaStatus] || qaStatus || "未声明"],
+      ["报告分发", bundleStateLabels[figure.image && figure.image.bundleState] || (figure.image && figure.image.bundleState) || "未声明"]
+    ].forEach(([label, value]) => {
+      const fact = node("div", "target-fact");
+      append(fact, node("dt", null, label), node("dd", null, value));
+      factGrid.appendChild(fact);
+    });
+    targetFacts.appendChild(factGrid);
+    const hash = node("div", "target-hash");
+    append(hash, node("span", "field-label", "目标原图 SHA-256"), node("code", null, target.targetSha256 || "未记录"));
+    hash.title = target.targetSha256 || "";
+    targetFacts.appendChild(hash);
+    if (report.audience !== "public" && sourceFileName) targetFacts.appendChild(labeledBlock("源文件", sourceFileName, "target-source"));
+    append(targetLayout, targetVisual, targetFacts);
+    targetSection.appendChild(targetLayout);
+    root.appendChild(targetSection);
+
+    const readingSection = node("section", "content-section reading-section");
+    readingSection.appendChild(sectionHeading("01", "读图", isImageDerived(figure) ? "先记录图上可直接观察到的结构与视觉编码，不把图像外观反推为论文事实。" : "先区分图上可直接观察到的现象，再进入论文解释。"));
+    const observationPanel = node("div", "observation-panel observation-panel-wide");
     observationPanel.appendChild(node("h4", null, "可观察事实"));
     (understanding.observations || []).forEach((observation) => {
       const item = node("article", "observation");
@@ -441,19 +547,25 @@
       append(item, meta, node("p", null, observation.statement), renderEvidenceRefs(observation.evidenceRefs));
       observationPanel.appendChild(item);
     });
-    grid.appendChild(paper);
-    grid.appendChild(observationPanel);
-    readingSection.appendChild(grid);
+    readingSection.appendChild(observationPanel);
     root.appendChild(readingSection);
 
     const evidenceSection = node("section", "content-section evidence-section");
-    evidenceSection.appendChild(sectionHeading("02", "证据作用", "把论文主张、作者解释和图本身的证据边界分开呈现。"));
+    evidenceSection.appendChild(sectionHeading("02", isImageDerived(figure) ? "图像边界" : "证据作用", isImageDerived(figure) ? "仅凭目标图像可以重建视觉结构，但不能据此声称恢复了原数据、原方法或论文结论。" : "把论文主张、作者解释和图本身的证据边界分开呈现。"));
     const evidenceGrid = node("div", "evidence-grid");
-    append(evidenceGrid,
-      labeledBlock("论文用这张图支持什么", understanding.paperClaim, "evidence-card claim-card"),
-      labeledBlock("它在论证中的作用", understanding.evidenceRole, "evidence-card role-card"),
-      labeledBlock("作者如何解释", understanding.authorInterpretation, "evidence-card interpretation-card")
-    );
+    if (isImageDerived(figure)) {
+      append(evidenceGrid,
+        labeledBlock("从图像能够确认", understanding.visualSummary, "evidence-card claim-card"),
+        labeledBlock("可重建范围", understanding.evidenceRole || "版式、几何、文本与可见曲线关系。", "evidence-card role-card"),
+        labeledBlock("不能由图像确认", understanding.authorInterpretation || "原始数据、生成算法、参数与科学主张。", "evidence-card interpretation-card")
+      );
+    } else {
+      append(evidenceGrid,
+        labeledBlock("论文用这张图支持什么", understanding.paperClaim, "evidence-card claim-card"),
+        labeledBlock("它在论证中的作用", understanding.evidenceRole, "evidence-card role-card"),
+        labeledBlock("作者如何解释", understanding.authorInterpretation, "evidence-card interpretation-card")
+      );
+    }
     const limitations = node("div", "evidence-card limitations-card");
     limitations.appendChild(node("span", "field-label", "证据边界"));
     limitations.appendChild(textList(understanding.limitations, "plain-list", "未声明额外限制"));
@@ -577,7 +689,7 @@
       }
 
       const science = node("div", "route-science");
-      science.appendChild(labeledBlock("对论文主张的覆盖", scope.claimCoverage, "route-claim"));
+      science.appendChild(labeledBlock(isImageDerived(figure) ? "对重构目标的覆盖" : "对论文主张的覆盖", scope.claimCoverage, "route-claim"));
       const reproduced = (scope.reproducesObservationIds || []).map((observationId) => {
         const observation = observationsById.get(observationId);
         return observation ? observation.statement : observationId;
@@ -642,13 +754,17 @@
     const includeInput = node("input");
     includeInput.type = "checkbox";
     includeInput.checked = included.has(figure.figureId);
-    includeInput.disabled = !chosen || routeIsBlocked(figure, chosen);
+    const targetUnavailable = !targetCanBeApproved(figure);
+    includeInput.disabled = targetUnavailable || !chosen || routeIsBlocked(figure, chosen);
     includeInput.addEventListener("change", () => {
       if (includeInput.checked) included.add(figure.figureId);
       else included.delete(figure.figureId);
       updateApproval();
     });
-    append(includeLabel, includeInput, node("span", null, includeInput.disabled ? "当前没有可批准路线" : "选择这张图和当前路线，准备执行确认"));
+    const includeText = targetUnavailable
+      ? "当前报告未携带可核验的目标原图，不能生成执行批准单"
+      : (includeInput.disabled ? "当前没有可批准路线" : "选择这张图和当前路线，准备执行确认");
+    append(includeLabel, includeInput, node("span", null, includeText));
     executionSection.appendChild(includeLabel);
 
     const sourceBox = node("div", "sources");
@@ -725,7 +841,7 @@
   }
 
   function updateApproval() {
-    const selected = figures.filter((figure) => included.has(figure.figureId));
+    const selected = figures.filter((figure) => included.has(figure.figureId) && targetCanBeApproved(figure));
     document.getElementById("approval-panel").hidden = selected.length === 0;
     const effects = new Set();
     let parametersValid = true;
@@ -799,13 +915,13 @@
   function exportApproval() {
     const selectedFigures = [];
     const effects = new Set();
-    figures.filter((figure) => included.has(figure.figureId)).forEach((figure) => {
+    figures.filter((figure) => included.has(figure.figureId) && targetCanBeApproved(figure)).forEach((figure) => {
       const route = routeFor(figure, currentRoutes.get(figure.figureId));
       if (!route || routeIsBlocked(figure, route)) return;
       (route.effects || []).forEach((effect) => effects.add(effect));
       selectedFigures.push({
         figureId: figure.figureId,
-        sourceImageSha256: (figure.image && figure.image.sha256) || null,
+        sourceImageSha256: figure.target.targetSha256,
         routeId: route.routeId,
         parameters: collectParameters(figure, route).values,
         deliverables: (route.deliverables || []).map((item) => item.kind)
@@ -861,6 +977,35 @@
   function renderAppendix() {
     const root = document.getElementById("appendix-content");
     root.textContent = "";
+
+    const integritySection = node("section", "appendix-integrity");
+    integritySection.appendChild(node("h3", null, "目标与报告资产校验"));
+    if (report.targetSet && report.targetSet.manifestSha256) {
+      const manifest = node("p", "appendix-manifest");
+      append(manifest, node("span", "field-label", "Phase 0 清单 SHA-256"), node("code", null, report.targetSet.manifestSha256));
+      integritySection.appendChild(manifest);
+    }
+    const targetList = node("ul", "appendix-list appendix-target-list");
+    figures.forEach((figure) => {
+      const item = node("li", "appendix-item appendix-target-item");
+      append(item, node("strong", null, `${figure.label} · ${(figure.target && figure.target.targetId) || figure.figureId}`));
+      const hashes = node("dl", "appendix-hashes");
+      [
+        ["目标原图", figure.target && figure.target.targetSha256],
+        ["报告 PNG 资产", figure.image && figure.image.sha256]
+      ].forEach(([label, value]) => {
+        const row = node("div", "appendix-hash-row");
+        const digest = node("dd");
+        digest.appendChild(value ? node("code", null, value) : node("span", "hash-unavailable", "未嵌入 / 未记录"));
+        append(row, node("dt", null, `${label} SHA-256`), digest);
+        hashes.appendChild(row);
+      });
+      item.appendChild(hashes);
+      targetList.appendChild(item);
+    });
+    integritySection.appendChild(targetList);
+    root.appendChild(integritySection);
+
     const envSection = node("section");
     envSection.appendChild(node("h3", null, "本机环境"));
     const envList = node("ul", "appendix-list");
@@ -882,6 +1027,11 @@
       const access = source.access && source.access.state ? source.access.state : "unknown";
       const license = source.license && (source.license.spdxId || source.license.name || source.license.state);
       append(item, node("strong", null, source.title), node("small", null, `${source.publisher || "来源未知"} · ${access} · ${license || "许可未知"}`));
+      if (source.artifact && source.artifact.sha256) {
+        const artifactHash = node("p", "appendix-artifact-hash");
+        append(artifactHash, node("span", null, "本地来源工件 SHA-256"), node("code", null, source.artifact.sha256));
+        item.appendChild(artifactHash);
+      }
       sourceList.appendChild(item);
     });
     sourceSection.appendChild(sourceList);

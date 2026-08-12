@@ -1,22 +1,23 @@
 # Execution and validation
 
-Execution continues the paper-evidence analysis established in Phase 1. A route succeeds scientifically only when its implementation covers the declared generation chain and its outputs satisfy predefined validation criteria; a successful command, plausible image, or close visual match is not sufficient.
+Execution continues the verified Phase 0 target set and the analysis established in Phase 1. Apply the acceptance model declared for each target's workflow mode. In `scientific-reproduction`, a route succeeds scientifically only when its implementation covers the declared generation chain and its outputs satisfy predefined scientific criteria. In `image-derived-reconstruction`, success is limited to the declared visual, geometric, digitization, or editability criteria; it cannot establish a paper claim.
 
 ## Prepare the run
 
-- Validate the approval with `scripts/plan_gate.py`. This is a stateless structural and integrity check, not a replay-prevention store.
+- Validate the approval with `scripts/plan_gate.py --report <report.json> --approval <approval.json> --target-manifest <targets/manifest.json>`. This rechecks the current Phase 0 manifest and target bytes, but remains a stateless structural and integrity check rather than a replay-prevention store.
 - Before the first side effect, atomically claim `(reportSha256, approvalId, idempotencyKey)` in a persistent run ledger. Reject a previously claimed approval ID or idempotency key, including after process restart. Record the claim and terminal run status; never infer idempotency from a successful `plan_gate.py` exit alone.
-- Freeze report hash, figure image hash, target paper claim, generation chain, validation targets, source artifact hash, selected route, parameters, resource limits, and authorized effects.
+- Freeze report hash, target-manifest hash, verified target ID and normalized target hash, workflow mode, paper claim when applicable, generation or reconstruction chain, validation targets, source artifact hash, selected route, parameters, resource limits, and authorized effects.
 - Create a versioned run directory. Preserve original code and data read-only; place patches and generated files in separate paths.
 - Capture environment versions, package/toolbox lists, hardware, random seeds, locale, and relevant numerical backend settings.
 
-## Confirm generation-chain coverage
+## Confirm chain coverage
 
-- Trace the selected source, configuration, and entry points to every generation-chain stage: input, selection, preprocessing or calibration, method or model, aggregation or statistics, and visual encoding.
+- For `scientific-reproduction`, trace the selected source, configuration, and entry points to every generation-chain stage: input, selection, preprocessing or calibration, method or model, aggregation or statistics, and visual encoding.
+- For `image-derived-reconstruction`, trace the target image through coordinate calibration, digitization or tracing, inferred geometry, appearance/layout reconstruction, and output encoding. Record that the chain begins with published pixels rather than original research inputs.
 - Record each stage as reproduced, substituted, derived, assumed, uncovered, or not required. Preserve the evidence reference for that judgment.
 - Confirm that actual input identity, parameter values, preprocessing, randomization, and output interfaces match the approved route.
-- Stop and renew the report and approval when an uncovered or substituted stage materially changes the reproduction level, validation target, or claim the route can support.
-- Freeze acceptance criteria before viewing final outputs where practical. Do not tune parameters solely to resemble the published figure.
+- Stop and renew the report and approval when the target bytes, workflow mode, an uncovered or substituted stage, reproduction level, validation target, or supported claim changes materially.
+- Freeze acceptance criteria before viewing final outputs where practical. In scientific mode, do not tune parameters solely to resemble the published figure. In image-derived mode, appearance may be the declared objective, but fitted pixels must never be reported as independent scientific evidence.
 
 ## Route-specific execution
 
@@ -40,6 +41,10 @@ Use only for workflows, architectures, mechanism diagrams, and other semantic sc
 
 Do not fabricate the missing original input. Deliver the verified blocker, checked sources, request path if lawful, and optional alternative route.
 
+### Image-derived reconstruction
+
+Use only when the target has no paper-grounded scientific context. Execute the approved digitization, tracing, layout, vectorization, or appearance-fitting route and quantify its declared geometric or visual error. Label all recovered values as image-derived. Do not claim recovery of the original data, method, experiment, uncertainty, or scientific conclusion. Follow [image-derived-reconstruction.md](image-derived-reconstruction.md).
+
 ## Figure-type routing
 
 - Quantitative/statistical plots: code, data, protocol, numerical validation.
@@ -52,7 +57,7 @@ Do not fabricate the missing original input. Deliver the verified blocker, check
 
 ## Acceptance criteria
 
-Prioritize scientific fidelity:
+For `scientific-reproduction`, prioritize scientific fidelity:
 
 1. variables, units, axes, scales, and sample counts;
 2. qualitative phenomenon, topology, mode assignment, peaks, trends, or ordering;
@@ -62,9 +67,12 @@ Prioritize scientific fidelity:
 
 Define tolerances before looking at final outputs where practical. Do not tune solely to mimic the published pixels.
 
+For `image-derived-reconstruction`, validate coordinate calibration, visible geometry, topology, annotations, panel structure, appearance, and editability only as declared. Report uncertainty caused by raster resolution, line width, markers, occlusion, compression, and anti-aliasing.
+
 ## Interpret results and hand off research value
 
-- Map each measured result to the target observation and paper claim. State whether the evidence supports, partially supports, does not support, or cannot test that claim.
+- In scientific mode, map each measured result to the target observation and paper claim. State whether the evidence supports, partially supports, does not support, or cannot test that claim.
+- In image-derived mode, map results to the visible target and reconstruction criteria; restate that no paper claim was tested.
 - Distinguish execution failure, implementation mismatch, input or protocol mismatch, stochastic or numerical variation, inconclusive evidence, and evidence that genuinely challenges a claim.
 - Explain discrepancies using generation-chain coverage, recorded assumptions, parameter sensitivity, robustness checks, and ambiguities in the paper. Do not infer that a paper claim is false merely because one route failed.
 - Identify reusable code, data transformations, parameterizations, validation procedures, and transferable method components, including the conditions under which they remain valid.
@@ -81,8 +89,9 @@ Define tolerances before looking at final outputs where practical. Do not tune s
 
 Record:
 
-- report and approval IDs/hashes;
-- scientific question, paper claim, figure evidence role, and target observations;
+- report, target-manifest, and approval IDs/hashes;
+- target IDs, normalized target hashes, workflow modes, and target observations;
+- scientific question, paper claim, and evidence role only when paper-grounded;
 - source URLs, versions, licenses, and hashes;
 - environment and hardware;
 - exact commands and parameters;

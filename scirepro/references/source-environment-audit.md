@@ -2,7 +2,7 @@
 
 ## Purpose and timing
 
-Use this audit only after the target figure's scientific meaning, paper-evidence role, generation chain, validation target, and candidate routes are understood. Treat sources and environments as evidence for or constraints on those routes, not as the purpose of SciRepro.
+Use this audit only after Phase 0 has produced verified targets and candidate routes are understood. For `scientific-reproduction`, first establish the target's scientific meaning, paper-evidence role, generation chain, and validation target. For `image-derived-reconstruction`, audit only the tools and dependencies needed for the declared digitization, tracing, layout, or appearance route; do not search for evidence that the image alone cannot supply.
 
 Start from candidate-route requirements. Audit relevant sources and local capabilities thoroughly enough to avoid false negatives, but do not inventory unrelated software, hardware, repositories, or datasets. Return every finding to a generation-chain link, route decision, or validation condition.
 

@@ -16,17 +16,21 @@ import zlib
 from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qsl, urlsplit
 
+from materialize_target_figures import TargetError as TargetManifestError
+from materialize_target_figures import validate_manifest as validate_target_manifest
+
 
 LEVELS = {
     "direct-recompute",
     "mechanism-reproduction",
     "alternative-validation",
     "editable-reconstruction",
+    "image-derived-reconstruction",
     "original-case-blocked",
 }
 ENVIRONMENT_STATES = {"verified", "available", "unknown", "missing"}
 ENVIRONMENT_PROVISIONING = {"existing-only", "isolated-open-source"}
-SOURCE_KINDS = {"paper", "official-code", "third-party-code", "dataset", "documentation", "skill"}
+SOURCE_KINDS = {"paper", "official-code", "third-party-code", "dataset", "documentation", "skill", "target-image"}
 ACCESS_STATES = {"local", "downloadable", "login-required", "request-required", "controlled", "unavailable", "not-found"}
 LICENSE_STATES = {"verified", "declared", "unknown", "restricted"}
 REQUIREMENT_CATEGORIES = ["input", "method", "protocol", "validation", "environment"]
@@ -77,6 +81,9 @@ GENERIC_WINDOWS_PATH = re.compile(r"(?i)\b[A-Z]:[\\/][^\s\"'<>]*")
 UNC_PATH = re.compile(r"\\\\[^\\\s\"']+[\\/][^\s\"']*")
 URL_IN_TEXT = re.compile(r"https?://[^\s\"'<>]+")
 MAX_ASSET_BYTES = 25 * 1024 * 1024
+MAX_TARGETS = 256
+ACQUISITION_MODES = {"paper-with-images", "paper-with-figure-references", "images-only"}
+WORKFLOW_MODES = {"scientific-reproduction", "image-derived-reconstruction"}
 
 
 class ReportError(ValueError):
@@ -264,10 +271,11 @@ def validate_url(value: object, label: str) -> None:
 def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
     allow_keys(report, {
         "schemaVersion", "reportId", "generatedAt", "generator", "workflow", "integrity",
-        "paper", "summary", "environment", "sources", "figures", "approvalPolicy",
+        "audience", "targetSet", "paper", "summary", "environment", "sources", "figures", "approvalPolicy",
     }, "report")
-    require(report.get("schemaVersion") == "reprofig.report/v2", "unsupported schemaVersion; regenerate legacy reports with the current SciRepro skill")
+    require(report.get("schemaVersion") == "reprofig.report/v3", "unsupported schemaVersion; regenerate legacy reports with the current SciRepro skill")
     require(isinstance(report.get("reportId"), str) and ID_PATTERN.fullmatch(report["reportId"]), "invalid reportId")
+    require(report.get("audience") in {"local", "public"}, "report.audience must be local or public")
     workflow = report.get("workflow", {})
     allow_keys(workflow, {"stage", "executionAllowed", "approvalRequired"}, "workflow")
     require(workflow.get("stage") == "awaiting-approval", "workflow.stage must be awaiting-approval")
@@ -279,25 +287,64 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
     figures = report.get("figures", [])
     require(isinstance(environments, list), "environment must be a list")
     require(isinstance(sources, list), "sources must be a list")
-    require(isinstance(figures, list) and 1 <= len(figures) <= 3, "report must contain 1-3 figures")
+    require(isinstance(figures, list) and 1 <= len(figures) <= MAX_TARGETS, f"report must contain 1-{MAX_TARGETS} targets")
 
     environment_ids = unique_ids(environments, "environmentId", "environment")
     source_ids = unique_ids(sources, "sourceId", "source")
     unique_ids(figures, "figureId", "figure")
     generator = allow_keys(report.get("generator", {}), {"name", "version"}, "generator")
     integrity = allow_keys(report.get("integrity", {}), {"algorithm", "canonicalization", "reportSha256"}, "integrity")
-    paper = allow_keys(report.get("paper", {}), {"paperId", "title", "doi", "citation", "sourcePath"}, "paper")
+    target_set = allow_keys(report.get("targetSet", {}), {"targetSetId", "manifestSha256", "targetCount", "acquisitionModes"}, "targetSet")
+    require(isinstance(target_set.get("targetSetId"), str) and ID_PATTERN.fullmatch(target_set["targetSetId"]), "invalid targetSetId")
+    require(isinstance(target_set.get("manifestSha256"), str) and re.fullmatch(r"[0-9a-f]{64}", target_set["manifestSha256"]), "invalid targetSet manifest hash")
+    require(
+        isinstance(target_set.get("targetCount"), int)
+        and not isinstance(target_set["targetCount"], bool)
+        and target_set["targetCount"] == len(figures),
+        "targetSet targetCount must equal report figures",
+    )
+    declared_mode_list = string_list(target_set.get("acquisitionModes"), "targetSet.acquisitionModes")
+    declared_modes = set(declared_mode_list)
+    require(len(declared_mode_list) == len(declared_modes), "targetSet.acquisitionModes must not contain duplicates")
+    require(declared_modes and declared_modes <= ACQUISITION_MODES, "targetSet contains an invalid acquisition mode")
+    paper_value = report.get("paper")
+    require(paper_value is None or isinstance(paper_value, dict), "paper must be an object or null")
+    paper = allow_keys(
+        paper_value,
+        {"paperId", "title", "doi", "citation", "sourcePath", "sourceSha256", "pageCount"},
+        "paper",
+    ) if paper_value is not None else None
     summary = allow_keys(report.get("summary", {}), {"objective", "overallLevel", "oneLine", "figureCount"}, "summary")
     non_empty_string(generator.get("name"), "generator.name", max_length=256)
     non_empty_string(generator.get("version"), "generator.version", max_length=128)
     require(integrity.get("algorithm") in {None, "sha256"}, "integrity.algorithm must be sha256 when declared")
     require(integrity.get("canonicalization") in {None, "json-sort-keys-v1"}, "unsupported integrity canonicalization")
-    non_empty_string(paper.get("paperId"), "paper.paperId", max_length=512)
-    non_empty_string(paper.get("title"), "paper.title")
-    non_empty_string(paper.get("citation"), "paper.citation")
+    if paper is not None:
+        non_empty_string(paper.get("paperId"), "paper.paperId", max_length=512)
+        non_empty_string(paper.get("title"), "paper.title")
+        non_empty_string(paper.get("citation"), "paper.citation")
+        if paper.get("sourcePath") is not None:
+            non_empty_string(paper["sourcePath"], "paper.sourcePath")
+        require(
+            isinstance(paper.get("sourceSha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", paper["sourceSha256"]),
+            "paper.sourceSha256 must bind the preserved Phase 0 paper",
+        )
+        require(
+            isinstance(paper.get("pageCount"), int)
+            and not isinstance(paper["pageCount"], bool)
+            and paper["pageCount"] >= 1,
+            "paper.pageCount must be a positive integer",
+        )
     non_empty_string(summary.get("objective"), "summary.objective")
     require(summary.get("overallLevel") in LEVELS | {"mixed"}, "summary.overallLevel must be a reproduction level or mixed")
     non_empty_string(summary.get("oneLine"), "summary.oneLine")
+    require(
+        isinstance(summary.get("figureCount"), int)
+        and not isinstance(summary["figureCount"], bool)
+        and summary["figureCount"] == len(figures),
+        "summary.figureCount must equal report figures",
+    )
     for environment in environments:
         allow_keys(environment, {"environmentId", "label", "status", "provisioning", "version", "detail", "evidenceRefs"}, f"environment {environment.get('environmentId')}")
         non_empty_string(environment.get("label"), f"environment {environment['environmentId']} label", max_length=1024)
@@ -336,7 +383,7 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
     minimum = finite_number(policy.get("minFigures"), "approvalPolicy.minFigures", integer=True)
     maximum = finite_number(policy.get("maxFigures"), "approvalPolicy.maxFigures", integer=True)
     ttl = finite_number(policy.get("ttlMinutes"), "approvalPolicy.ttlMinutes", integer=True)
-    require(1 <= minimum <= maximum <= 3, "approvalPolicy figure bounds must satisfy 1 <= minFigures <= maxFigures <= 3")
+    require(1 <= minimum <= maximum <= len(figures), "approvalPolicy bounds must be within the materialized target set")
     require(1 <= ttl <= 10080, "approvalPolicy.ttlMinutes must be between 1 and 10080")
     require(policy.get("defaultOutputPolicy") == "create-only", "approvalPolicy.defaultOutputPolicy must be create-only")
     allowed_effects = set(string_list(policy.get("allowedEffects"), "approvalPolicy.allowedEffects", ids=True))
@@ -346,10 +393,12 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
     require(not (allowed_effects & consent_effects), "automatic and consent-required effects must be disjoint")
 
     route_ids_global: set[str] = set()
+    target_ids_global: list[str] = []
+    actual_modes: set[str] = set()
     for figure in figures:
         figure_id = figure["figureId"]
         figure_fields = {
-            "figureId", "label", "page", "section", "caption", "image", "understanding",
+            "figureId", "label", "page", "section", "caption", "target", "image", "understanding",
             "generationLogic", "validationTargets", "reproduction", "requirements", "routes", "sourceRefs",
         }
         allow_keys(figure, figure_fields, f"figure {figure_id}")
@@ -359,10 +408,62 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
         if figure.get("section") is not None:
             non_empty_string(figure["section"], f"{figure_id} section", max_length=1024)
 
+        target_fields = {"targetId", "acquisitionMode", "workflowMode", "requestedRef", "targetSha256", "materialization"}
+        target = allow_keys(figure.get("target", {}), target_fields, f"{figure_id} target")
+        require(set(target) == target_fields, f"{figure_id}: target fields are incomplete")
+        require(isinstance(target.get("targetId"), str) and ID_PATTERN.fullmatch(target["targetId"]), f"{figure_id}: invalid targetId")
+        require(target.get("acquisitionMode") in ACQUISITION_MODES, f"{figure_id}: invalid acquisition mode")
+        require(target.get("workflowMode") in WORKFLOW_MODES, f"{figure_id}: invalid workflow mode")
+        target_ids_global.append(target["targetId"])
+        actual_modes.add(target["acquisitionMode"])
+        if target["acquisitionMode"] == "images-only":
+            require(
+                target["workflowMode"] == "image-derived-reconstruction",
+                f"{figure_id}: images-only acquisition requires image-derived-reconstruction",
+            )
+        else:
+            require(
+                target["workflowMode"] == "scientific-reproduction",
+                f"{figure_id}: a paper-grounded acquisition requires scientific-reproduction",
+            )
+        if target.get("requestedRef") is not None:
+            non_empty_string(target["requestedRef"], f"{figure_id}: requestedRef", max_length=1024)
+        require(isinstance(target.get("targetSha256"), str) and re.fullmatch(r"[0-9a-f]{64}", target["targetSha256"]), f"{figure_id}: invalid target SHA-256")
+        materialization_fields = {"method", "qaStatus", "page", "renderDpi", "captionIncluded", "sourceFileName", "figureReference", "cropBoxPdfPoints", "width", "height"}
+        materialization = allow_keys(target.get("materialization", {}), materialization_fields, f"{figure_id} materialization")
+        require(set(materialization) == materialization_fields, f"{figure_id}: materialization fields are incomplete")
+        non_empty_string(materialization.get("method"), f"{figure_id}: materialization method", max_length=256)
+        require(materialization.get("qaStatus") == "verified", f"{figure_id}: Phase 0 target must be visually verified")
+        if materialization.get("page") is not None:
+            require(
+                isinstance(materialization["page"], int)
+                and not isinstance(materialization["page"], bool)
+                and materialization["page"] >= 1,
+                f"{figure_id}: invalid paper page",
+            )
+        require(
+            isinstance(materialization.get("renderDpi"), int)
+            and not isinstance(materialization["renderDpi"], bool)
+            and 72 <= materialization["renderDpi"] <= 600,
+            f"{figure_id}: invalid render DPI",
+        )
+        require(isinstance(materialization.get("captionIncluded"), bool), f"{figure_id}: captionIncluded must be boolean")
+        for dimension in ("width", "height"):
+            require(
+                isinstance(materialization.get(dimension), int)
+                and not isinstance(materialization[dimension], bool)
+                and materialization[dimension] > 0,
+                f"{figure_id}: invalid target {dimension}",
+            )
+        if target["workflowMode"] == "scientific-reproduction":
+            require(paper is not None, f"{figure_id}: scientific reproduction requires a paper")
+        elif paper is None:
+            require(target["acquisitionMode"] == "images-only", f"{figure_id}: a paperless target must use images-only acquisition")
+
         source_refs = evidence_refs(figure.get("sourceRefs"), f"{figure_id} sourceRefs", source_ids)
         require(bool(source_refs), f"{figure_id}: at least one figure source reference is required")
 
-        image = allow_keys(figure.get("image", {}), {"sourcePath", "relativePath", "sourceRef", "redistributionAllowed", "mediaType", "width", "height", "sizeBytes", "sha256", "metadataStripped"}, f"{figure_id} image")
+        image = allow_keys(figure.get("image", {}), {"sourcePath", "relativePath", "sourceRef", "redistributionAllowed", "bundleState", "mediaType", "width", "height", "sizeBytes", "sha256", "metadataStripped"}, f"{figure_id} image")
         if image.get("sourceRef") is not None:
             require(image["sourceRef"] in source_ids, f"{figure_id}: image sourceRef does not resolve")
         if image.get("mediaType") is not None:
@@ -378,15 +479,13 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
             require(isinstance(image.get("sizeBytes"), int) and image["sizeBytes"] > 0, f"{figure_id}: built image sizeBytes is invalid")
             require(isinstance(image.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", image["sha256"]), f"{figure_id}: built image SHA-256 is invalid")
             require(image.get("metadataStripped") is True, f"{figure_id}: built image must record metadata stripping")
+            require(image.get("bundleState") in {"embedded-local", "embedded-public"}, f"{figure_id}: embedded image has invalid bundleState")
+            require(image.get("bundleState") == ("embedded-local" if report["audience"] == "local" else "embedded-public"), f"{figure_id}: bundleState does not match report audience")
+        elif allow_built_assets and image.get("bundleState") == "omitted-rights":
+            require(report["audience"] == "public", f"{figure_id}: local reports may not omit Phase 0 targets")
+            require(image.get("relativePath") is None and image.get("sha256") is None, f"{figure_id}: omitted target may not carry a bundled asset")
         else:
-            require(image.get("relativePath") is None, f"{figure_id}: relativePath is builder output, not an input asset")
-            require(image.get("sourceRef") in source_ids, f"{figure_id}: an unbundled image requires a sourceRef")
-            source = next(item for item in sources if item["sourceId"] == image["sourceRef"])
-            require(source.get("url") is not None, f"{figure_id}: unbundled image sourceRef must provide a verified HTTPS URL")
-            require(
-                source.get("access", {}).get("state") not in {"not-found", "unavailable"},
-                f"{figure_id}: unbundled image source is not currently accessible",
-            )
+            require(image.get("sourcePath") is not None, f"{figure_id}: report input must bind a Phase 0 target image")
 
         understanding_fields = {
             "visualSummary", "observations", "paperClaim", "evidenceRole", "authorInterpretation", "limitations",
@@ -394,9 +493,15 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
         understanding = allow_keys(figure.get("understanding", {}), understanding_fields, f"{figure_id} understanding")
         require(set(understanding) == understanding_fields, f"{figure_id}: understanding must declare {sorted(understanding_fields)}")
         non_empty_string(understanding.get("visualSummary"), f"{figure_id} visualSummary")
-        non_empty_string(understanding.get("paperClaim"), f"{figure_id} paperClaim")
-        non_empty_string(understanding.get("evidenceRole"), f"{figure_id} evidenceRole")
-        non_empty_string(understanding.get("authorInterpretation"), f"{figure_id} authorInterpretation")
+        if target["workflowMode"] == "scientific-reproduction":
+            non_empty_string(understanding.get("paperClaim"), f"{figure_id} paperClaim")
+            non_empty_string(understanding.get("evidenceRole"), f"{figure_id} evidenceRole")
+            non_empty_string(understanding.get("authorInterpretation"), f"{figure_id} authorInterpretation")
+        else:
+            require(understanding.get("paperClaim") is None, f"{figure_id}: image-derived reconstruction cannot assert a paper claim")
+            require(understanding.get("authorInterpretation") is None, f"{figure_id}: image-derived reconstruction cannot assert an author interpretation")
+            if understanding.get("evidenceRole") is not None:
+                non_empty_string(understanding["evidenceRole"], f"{figure_id} visual reconstruction scope")
         string_list(understanding.get("limitations"), f"{figure_id} limitations", max_items=32)
 
         observations = understanding.get("observations")
@@ -458,23 +563,33 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
         require(isinstance(validation_targets, list) and 1 <= len(validation_targets) <= 32, f"{figure_id}: 1-32 validation targets are required")
         validation_target_ids = unique_ids(validation_targets, "targetId", f"{figure_id} validation target")
         validation_fields = {"targetId", "label", "kind", "origin", "observable", "criterion", "supportsClaim", "evidenceRefs"}
-        for target in validation_targets:
-            target_id = target["targetId"]
-            allow_keys(target, validation_fields, f"validation target {target_id}")
-            require(set(target) == validation_fields, f"{target_id}: validation target fields are incomplete")
-            non_empty_string(target.get("label"), f"{target_id} label", max_length=1024)
-            require(target.get("kind") in VALIDATION_KINDS, f"{target_id}: invalid validation kind")
-            require(target.get("origin") in ORIGINS, f"{target_id}: invalid validation origin")
-            non_empty_string(target.get("observable"), f"{target_id} observable")
-            non_empty_string(target.get("criterion"), f"{target_id} criterion")
-            non_empty_string(target.get("supportsClaim"), f"{target_id} supportsClaim")
-            refs = evidence_refs(target.get("evidenceRefs"), f"{target_id} evidenceRefs", source_ids)
-            require(bool(refs), f"{target_id}: at least one evidence reference is required")
+        for validation_target in validation_targets:
+            validation_target_id = validation_target["targetId"]
+            allow_keys(validation_target, validation_fields, f"validation target {validation_target_id}")
+            require(set(validation_target) == validation_fields, f"{validation_target_id}: validation target fields are incomplete")
+            non_empty_string(validation_target.get("label"), f"{validation_target_id} label", max_length=1024)
+            require(validation_target.get("kind") in VALIDATION_KINDS, f"{validation_target_id}: invalid validation kind")
+            require(validation_target.get("origin") in ORIGINS, f"{validation_target_id}: invalid validation origin")
+            non_empty_string(validation_target.get("observable"), f"{validation_target_id} observable")
+            non_empty_string(validation_target.get("criterion"), f"{validation_target_id} criterion")
+            non_empty_string(validation_target.get("supportsClaim"), f"{validation_target_id} supportsClaim")
+            refs = evidence_refs(validation_target.get("evidenceRefs"), f"{validation_target_id} evidenceRefs", source_ids)
+            require(bool(refs), f"{validation_target_id}: at least one evidence reference is required")
 
         reproduction_fields = {"level", "verdict", "confidence", "assessment", "recommendedRouteId"}
         reproduction = allow_keys(figure.get("reproduction", {}), reproduction_fields, f"{figure_id} reproduction")
         require(set(reproduction) == reproduction_fields, f"{figure_id}: reproduction fields are incomplete")
         require(reproduction.get("level") in LEVELS, f"{figure_id}: invalid reproduction level")
+        if target["workflowMode"] == "image-derived-reconstruction":
+            require(
+                reproduction.get("level") == "image-derived-reconstruction",
+                f"{figure_id}: image-derived workflow must use the image-derived reproduction level",
+            )
+        else:
+            require(
+                reproduction.get("level") != "image-derived-reconstruction",
+                f"{figure_id}: scientific workflow cannot use the image-derived reproduction level",
+            )
         require(reproduction.get("confidence") in CONFIDENCE_LEVELS, f"{figure_id}: invalid confidence")
         non_empty_string(reproduction.get("verdict"), f"{figure_id} reproduction verdict")
         non_empty_string(reproduction.get("assessment"), f"{figure_id} reproduction assessment")
@@ -633,6 +748,13 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
         expected_flags = {recommended} if recommended is not None else set()
         require(recommended_flags == expected_flags, f"{figure_id}: recommended flags must match recommendedRouteId")
 
+    require(len(target_ids_global) == len(set(target_ids_global)), "target IDs must be unique across the report")
+    require(actual_modes == declared_modes, "targetSet.acquisitionModes must exactly match report targets")
+    if actual_modes == {"images-only"}:
+        require(paper is None, "an images-only target set cannot declare a paper")
+    else:
+        require(paper is not None, "paper-backed targets require a paper")
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -754,17 +876,163 @@ def public_report(value: object, key: str | None = None) -> object:
     return value
 
 
-def copy_figure_assets(report: dict, output: Path, asset_root: Path) -> None:
+def load_target_manifest(path: Path) -> tuple[dict, dict[str, dict]]:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    root = path.parent.resolve()
+    try:
+        by_id = validate_target_manifest(manifest, root=root, require_verified=True)
+    except TargetManifestError as exc:
+        raise ReportError(f"invalid Phase 0 target manifest: {exc}") from exc
+
+    require(
+        isinstance(manifest.get("targetCount"), int)
+        and not isinstance(manifest["targetCount"], bool)
+        and manifest["targetCount"] == len(by_id),
+        "Phase 0 targetCount must be an integer equal to the materialized target set",
+    )
+    paper = manifest.get("paper")
+    paper_backed = [target_id for target_id, target in by_id.items() if target["acquisitionMode"] != "images-only"]
+    if paper_backed:
+        require(isinstance(paper, dict), "paper-backed targets require a preserved Phase 0 paper")
+        require(
+            isinstance(paper.get("pageCount"), int)
+            and not isinstance(paper["pageCount"], bool)
+            and paper["pageCount"] >= 1,
+            "preserved Phase 0 paper pageCount must be a positive integer",
+        )
+    else:
+        require(paper is None, "an images-only target manifest cannot bind an unrelated paper")
+
+    for target_id, target in by_id.items():
+        for dimension in ("width", "height", "dpi"):
+            require(
+                isinstance(target.get(dimension), int) and not isinstance(target[dimension], bool),
+                f"{target_id}: {dimension} must be an integer",
+            )
+        if target.get("paperPage") is not None:
+            require(
+                isinstance(target["paperPage"], int) and not isinstance(target["paperPage"], bool),
+                f"{target_id}: paperPage must be an integer",
+            )
+        crop_box = target.get("cropBoxPdfPoints")
+        if crop_box is not None:
+            require(
+                all(not isinstance(value, bool) for value in crop_box),
+                f"{target_id}: cropBoxPdfPoints cannot contain booleans",
+            )
+        if target["acquisitionMode"] == "images-only":
+            require(target.get("identityStatus") == "not-applicable", f"{target_id}: images-only identity must be not-applicable")
+            require(
+                target["workflowMode"] == "image-derived-reconstruction",
+                f"{target_id}: images-only acquisition requires image-derived-reconstruction",
+            )
+        else:
+            require(target.get("identityStatus") == "resolved", f"{target_id}: paper identity must be resolved before report generation")
+            require(
+                target["workflowMode"] == "scientific-reproduction",
+                f"{target_id}: paper-grounded acquisition requires scientific-reproduction",
+            )
+    return manifest, by_id
+
+
+def bind_target_manifest(report: dict, manifest: dict, targets: dict[str, dict], manifest_path: Path, audience: str) -> None:
+    figures = report.get("figures")
+    require(isinstance(figures, list), "report figures must be a list")
+    manifest_paper = manifest.get("paper")
+    paper_backed = any(target["acquisitionMode"] != "images-only" for target in targets.values())
+    if paper_backed:
+        require(isinstance(manifest_paper, dict), "paper-backed targets require a preserved Phase 0 paper")
+        require(isinstance(report.get("paper"), dict), "paper-backed targets require report paper metadata")
+        report["paper"]["sourceSha256"] = manifest_paper["sha256"]
+        report["paper"]["pageCount"] = manifest_paper["pageCount"]
+    else:
+        require(report.get("paper") is None, "an images-only report cannot declare a paper")
+    figure_target_ids: list[str] = []
+    for figure in figures:
+        require(isinstance(figure, dict), "report figure entries must be objects")
+        target_stub = figure.get("target")
+        require(isinstance(target_stub, dict), f"{figure.get('figureId')}: target binding is required")
+        target_id = target_stub.get("targetId")
+        require(target_id in targets, f"{figure.get('figureId')}: targetId does not exist in the Phase 0 manifest")
+        figure_target_ids.append(target_id)
+        source = targets[target_id]
+        target_hash = source["targetSha256"]
+        method = "pdf-extraction" if source["acquisitionMode"] == "paper-with-figure-references" else "user-upload"
+        public_requested_ref = source.get("figureReference") or target_id
+        figure["target"] = {
+            "targetId": target_id,
+            "acquisitionMode": source["acquisitionMode"],
+            "workflowMode": source["workflowMode"],
+            "requestedRef": public_requested_ref if audience == "public" else (source.get("requestedAs") or source.get("figureReference")),
+            "targetSha256": target_hash,
+            "materialization": {
+                "method": method,
+                "qaStatus": source["qaStatus"],
+                "page": source.get("paperPage"),
+                "renderDpi": source.get("dpi"),
+                "captionIncluded": bool(source.get("captionIncluded")),
+                "sourceFileName": None if audience == "public" else source.get("sourceFileName"),
+                "figureReference": source.get("figureReference"),
+                "cropBoxPdfPoints": source.get("cropBoxPdfPoints"),
+                "width": source.get("width"),
+                "height": source.get("height"),
+            },
+        }
+        if source.get("paperPage") is not None:
+            figure["page"] = source["paperPage"]
+        if source.get("caption"):
+            figure["caption"] = source["caption"]
+        elif not figure.get("caption"):
+            figure["caption"] = (
+                source.get("sourceFileName") or source.get("requestedAs") or target_id
+                if audience == "local"
+                else public_requested_ref
+            )
+        image = figure.setdefault("image", {})
+        # Distribution authority belongs to the Phase 0 target record.  Report
+        # prose may not promote a local-analysis-only object into a public
+        # asset merely by setting a boolean in the input JSON.
+        redistribution = source.get("localAnalysisOnly") is False
+        source_ref = image.get("sourceRef")
+        image.clear()
+        image.update({
+            "sourcePath": str((manifest_path.parent / source["normalizedPath"]).resolve()),
+            "sourceRef": source_ref,
+            "redistributionAllowed": redistribution,
+            "bundleState": None,
+            "mediaType": "image/png",
+            "width": source.get("width"),
+            "height": source.get("height"),
+        })
+    require(len(figure_target_ids) == len(set(figure_target_ids)), "each report figure must bind a unique Phase 0 target")
+    require(set(figure_target_ids) == set(targets), "every Phase 0 target must appear exactly once in the report")
+    report["schemaVersion"] = "reprofig.report/v3"
+    report.setdefault("generator", {})["name"] = "scirepro"
+    report["audience"] = audience
+    report["targetSet"] = {
+        "targetSetId": manifest.get("targetSetId"),
+        "manifestSha256": manifest["integrity"]["manifestSha256"],
+        "targetCount": len(targets),
+        "acquisitionModes": sorted({target["acquisitionMode"] for target in targets.values()}),
+    }
+
+
+def copy_figure_assets(report: dict, output: Path, asset_root: Path, audience: str) -> list[str]:
     assets = output / "assets"
     assets.mkdir()
+    omitted: list[str] = []
     for figure in report["figures"]:
         image = figure.get("image", {})
         source_raw = image.get("sourcePath")
-        if not source_raw:
-            # A new bundle is self-contained; never inherit an unresolved local path.
+        require(source_raw, f"{figure['figureId']}: Phase 0 target image is not bound")
+        if audience == "public" and image.get("redistributionAllowed") is not True:
             image.pop("relativePath", None)
+            image.pop("sha256", None)
+            image.pop("sizeBytes", None)
+            image.pop("metadataStripped", None)
+            image["bundleState"] = "omitted-rights"
+            omitted.append(figure["target"]["targetId"])
             continue
-        require(image.get("redistributionAllowed") is True, f"{figure['figureId']}: image redistribution is not authorized")
         candidate = Path(source_raw).expanduser()
         require(not candidate.is_symlink(), f"{figure['figureId']}: symlinked image files are forbidden")
         source = candidate.resolve()
@@ -785,6 +1053,8 @@ def copy_figure_assets(report: dict, output: Path, asset_root: Path) -> None:
         image["sizeBytes"] = destination.stat().st_size
         image["sha256"] = sha256_file(destination)
         image["metadataStripped"] = True
+        image["bundleState"] = "embedded-local" if audience == "local" else "embedded-public"
+    return omitted
 
 
 def write_json(path: Path, value: object) -> None:
@@ -795,11 +1065,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument(
-        "--asset-root",
-        type=Path,
-        help="Approved directory containing redistributable figure assets (defaults to the input JSON directory).",
-    )
+    parser.add_argument("--target-manifest", required=True, type=Path, help="Verified scirepro.targets/v1 Phase 0 manifest.")
+    parser.add_argument("--audience", required=True, choices=("local", "public"), help="Local analysis report or rights-filtered public bundle.")
     args = parser.parse_args()
 
     input_path = args.input.expanduser().resolve()
@@ -812,13 +1079,22 @@ def main() -> int:
             output.mkdir(parents=True)
 
         report = json.loads(input_path.read_text(encoding="utf-8"))
+        require(
+            isinstance(report, dict) and report.get("schemaVersion") == "reprofig.report/v3",
+            "report input must use reprofig.report/v3; regenerate legacy v1/v2 reports",
+        )
+        manifest_path = args.target_manifest.expanduser().resolve()
+        require(manifest_path.is_file(), f"target manifest does not exist: {manifest_path}")
+        manifest, targets = load_target_manifest(manifest_path)
+        bind_target_manifest(report, manifest, targets, manifest_path, args.audience)
         validate_report(report)
-        asset_root = (args.asset_root or input_path.parent).expanduser().resolve()
+        asset_root = manifest_path.parent.resolve()
         require(asset_root.is_dir(), f"asset root does not exist: {asset_root}")
-        copy_figure_assets(report, output, asset_root)
+        omitted_target_ids = copy_figure_assets(report, output, asset_root, args.audience)
         report = public_report(report)
         require(isinstance(report, dict), "public report must remain an object")
         report.setdefault("summary", {})["figureCount"] = len(report["figures"])
+        validate_report(report, allow_built_assets=True)
         integrity = report.setdefault("integrity", {})
         integrity["algorithm"] = "sha256"
         integrity["canonicalization"] = "json-sort-keys-v1"
@@ -841,6 +1117,9 @@ def main() -> int:
             "schemaVersion": "reprofig.bundle/v1",
             "reportId": report["reportId"],
             "reportSha256": integrity["reportSha256"],
+            "audience": args.audience,
+            "targetManifestSha256": report["targetSet"]["manifestSha256"],
+            "omittedTargetIds": omitted_target_ids,
             "files": [
                 {"path": name, "sizeBytes": (output / name).stat().st_size, "sha256": sha256_file(output / name)}
                 for name in generated_files

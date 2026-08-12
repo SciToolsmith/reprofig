@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 
 from build_report import MAX_ASSET_BYTES
 from build_report import ReportError as ReportValidationError
-from build_report import sha256_file, validate_report, validate_sanitized_png
+from build_report import load_target_manifest, sha256_file, validate_report, validate_sanitized_png
 
 
 class GateError(ValueError):
@@ -103,6 +103,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--approval", required=True, type=Path)
+    parser.add_argument(
+        "--target-manifest",
+        required=True,
+        type=Path,
+        help="Current verified scirepro.targets/v1 manifest bound by the local report.",
+    )
     args = parser.parse_args()
 
     try:
@@ -112,10 +118,44 @@ def main() -> int:
         require(isinstance(approval, dict), "approval must be an object")
         schema_version = report.get("schemaVersion")
         require(
-            schema_version == "reprofig.report/v2",
-            "unsupported report schema; legacy reprofig.report/v1 reports must be regenerated before approval",
+            schema_version == "reprofig.report/v3",
+            "unsupported report schema; legacy reports must be regenerated before approval",
         )
         validate_report(report, allow_built_assets=True)
+        require(report.get("audience") == "local", "execution approval must be exported from the local Phase 0 report")
+        target_manifest_path = args.target_manifest.expanduser().resolve()
+        require(target_manifest_path.is_file(), "Phase 0 target manifest is missing")
+        target_manifest, manifest_targets = load_target_manifest(target_manifest_path)
+        report_target_set = report.get("targetSet", {})
+        require(
+            report_target_set.get("manifestSha256") == target_manifest.get("integrity", {}).get("manifestSha256"),
+            "Phase 0 target manifest hash no longer matches the approved report",
+        )
+        require(
+            report_target_set.get("targetSetId") == target_manifest.get("targetSetId"),
+            "Phase 0 target-set identity mismatch",
+        )
+        require(
+            report_target_set.get("targetCount") == target_manifest.get("targetCount") == len(manifest_targets),
+            "Phase 0 target count mismatch",
+        )
+        report_target_ids = {figure.get("target", {}).get("targetId") for figure in report.get("figures", [])}
+        require(report_target_ids == set(manifest_targets), "report targets no longer match the Phase 0 manifest")
+        manifest_paper = target_manifest.get("paper")
+        report_paper = report.get("paper")
+        if manifest_paper is None:
+            require(report_paper is None, "images-only report unexpectedly declares a paper")
+        else:
+            require(isinstance(report_paper, dict), "paper-backed report is missing its paper binding")
+            require(report_paper.get("sourceSha256") == manifest_paper.get("sha256"), "preserved paper hash mismatch")
+            require(report_paper.get("pageCount") == manifest_paper.get("pageCount"), "preserved paper page-count mismatch")
+        for figure in report.get("figures", []):
+            target = figure.get("target", {})
+            target_id = target.get("targetId")
+            manifest_target = manifest_targets[target_id]
+            require(target.get("targetSha256") == manifest_target.get("targetSha256"), f"{figure['figureId']}: current Phase 0 target hash mismatch")
+            require(target.get("acquisitionMode") == manifest_target.get("acquisitionMode"), f"{figure['figureId']}: acquisition mode changed after report generation")
+            require(target.get("workflowMode") == manifest_target.get("workflowMode"), f"{figure['figureId']}: workflow mode changed after report generation")
         report_root = args.report.parent.resolve()
         for figure in report.get("figures", []):
             image = figure.get("image", {})
@@ -165,7 +205,7 @@ def main() -> int:
         selections = approval.get("selectedFigures", [])
         policy = report.get("approvalPolicy", {})
         minimum = int(policy.get("minFigures", 1))
-        maximum = int(policy.get("maxFigures", 3))
+        maximum = int(policy.get("maxFigures", len(figures)))
         require(isinstance(selections, list) and minimum <= len(selections) <= maximum, "invalid selected figure count")
         require(all(isinstance(selection, dict) for selection in selections), "selection must be an object")
         figure_ids = [selection.get("figureId") for selection in selections]
@@ -199,8 +239,11 @@ def main() -> int:
             figure_id = selection.get("figureId")
             require(figure_id in figures, f"unknown figure {figure_id}")
             figure = figures[figure_id]
-            expected_image_hash = figure.get("image", {}).get("sha256")
-            require(selection.get("sourceImageSha256") == expected_image_hash, f"{figure_id}: image hash mismatch")
+            target = figure.get("target", {})
+            expected_target_hash = target.get("targetSha256")
+            require(selection.get("sourceImageSha256") == expected_target_hash, f"{figure_id}: Phase 0 target hash mismatch")
+            image = figure.get("image", {})
+            require(image.get("bundleState") in {"embedded-local", "embedded-public"}, f"{figure_id}: target image is not available in this report and cannot be approved")
             routes = {route["routeId"]: route for route in figure.get("routes", [])}
             route_id = selection.get("routeId")
             require(route_id in routes, f"{figure_id}: unknown route")
@@ -292,6 +335,7 @@ def main() -> int:
             "status": "valid",
             "reportId": report["reportId"],
             "reportSha256": expected_hash,
+            "targetManifestSha256": target_manifest["integrity"]["manifestSha256"],
             "approvalId": approval_id,
             "idempotencyKey": idempotency_key,
             "replayProtection": "not-enforced-by-stateless-validator",

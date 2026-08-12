@@ -9,9 +9,9 @@
   <a href="README.md">简体中文</a> · <strong>English</strong> · <a href="#start-in-30-seconds">Quick start</a> · <a href="scirepro/SKILL.md">Full specification</a>
 </p>
 
-SciRepro is a scientific-figure reproduction skill for Codex. Give it a paper and target figures; it explains which claims they support, reconstructs their input-to-figure generation chains, proposes evidence-backed reproduction routes, and executes and validates only the route you approve.
+SciRepro is a scientific-figure reproduction skill for Codex. It first materializes every target as a verifiable object, then interprets the figures, traces their generation chains, investigates reproduction conditions, and produces a local report containing the targets. It executes and validates only the route you approve.
 
-> **It reproduces the research process and key scientific phenomena—not the pixels of the published image.**
+> **Verify the targets. Investigate the routes. Validate the scientific result.**
 
 ## Start in 30 seconds
 
@@ -21,33 +21,40 @@ SciRepro is a scientific-figure reproduction skill for Codex. Give it a paper an
 Use $skill-installer to install https://github.com/SciToolsmith/scirepro/tree/main/scirepro
 ```
 
-**Invoke**
+**Invoke: every entry path accepts one or many figures**
 
 ```text
+# Paper + figure references (the skill extracts complete targets)
 Use $scirepro to analyze Figures 6, 7, and 11 from this paper.
-First give me their evidential roles, generation chains, candidate routes,
-and validation criteria. Generate the local report, then wait for my route selection.
+
+# Paper + uploaded target image set
+Use $scirepro to analyze this paper and these uploaded target images.
+
+# Images only
+Use $scirepro to reconstruct the visible curves, data, and layout in these images.
 ```
+
+Every path first creates a `targets/` workspace with preserved sources, normalized PNGs, crop QA, and a hash manifest. Targets reliably matched to the paper and verified by QA use `scientific-reproduction`; images-only work uses the explicitly bounded `image-derived-reconstruction` mode.
 
 ## What you receive
 
-- **Evidence map** — what is observable, which paper claim it supports, and what it cannot establish.
+- **Verified target set** — source, page or user label, crop metadata, QA status, and hash for every target.
+- **Local investigation report** — all target images, interpretations, generation chains, routes, gaps, and local capabilities in one page.
 - **Reproduction routes** — explicit data, methods, protocols, assumptions, gaps, local conditions, and scientific validation criteria.
 - **Traceable results** — rerunnable code, generated figures, configuration, validation results, logs, and provenance.
 
 ## Report first. Execute second.
 
-**Before approval:** interpret the figure, investigate evidence, formulate routes, and generate a local report. The report separates what is verified, derivable, transparently assumable, and genuinely missing.
+**Before approval:** verify the targets, investigate evidence, formulate routes, and generate a local report. The report displays every reproduction target and separates what is verified, derivable, transparently assumable, and genuinely missing.
 
 **After approval:** execute only the selected figures and routes. If the data, algorithm, environment, budget, or supported claim changes materially, SciRepro stops and asks again.
 
-## Scientific reproduction, not visual reconstruction
+## Two modes, two claim boundaries
 
-- It does not trace or fit curves from the published image and present them as numerical results.
-- It does not present substitute data, third-party implementations, or transparent assumptions as the authors' original case.
-- It does not equate “the program ran” with “the paper's claim was reproduced.”
+- **With a paper: scientific reproduction.** Reconstruct the data–method–protocol–plot chain and validate predefined trends, peaks, frequencies, modes, statistics, or mechanism relationships.
+- **Images only: image-derived reconstruction.** Trace, digitize, fit visible geometry, or rebuild layout, but claim only visible geometry and appearance—not recovery of the original data, method, experiment, or paper conclusion.
 
-SciRepro validates predefined trends, peaks, frequencies, modes, statistics, or mechanism relationships, then states **what the result supports, what it cannot support, and what remains missing**.
+The local report must display every target directly. A public/shareable report embeds image bytes only when redistribution rights are verified; otherwise it shows a rights notice without exposing local paths or content.
 
 <p align="center">
   <a href="scirepro/SKILL.md#evidence-model">Reproduction levels</a> ·

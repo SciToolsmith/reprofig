@@ -1,4 +1,4 @@
 interface:
   display_name: "SciRepro"
-  short_description: "从论文图件理解科研证据，重建研究过程并完成可验证、可追溯的科学复现"
-  default_prompt: "Use $scirepro to interpret selected paper figures, reconstruct their generation logic, propose evidence-backed reproduction routes, and execute and scientifically validate the route I approve."
+  short_description: "物化目标图件，研判复现路线，并完成可验证、可追溯的科学复现"
+  default_prompt: "Use $scirepro to acquire and verify all target figures from my paper, figure references, or uploaded images; generate a local feasibility report with the targets; and wait for my route approval before execution."
