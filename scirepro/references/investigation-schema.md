@@ -96,6 +96,8 @@ Every environment also declares a provisioning policy:
 
 Static MATLAB discovery maps to `status: available` with `provisioning: existing-only`. Only an approved live probe that verifies the route-required runtime, toolboxes/functions, and license may promote it to `verified`.
 
+Every `verified` environment must cite at least one `environment-audit` source with a local hashed artifact in `evidenceRefs`. The artifact should contain the redacted route-specific probe result, not secrets or unrestricted logs. A paper, README, static product page, or unarchived discovery claim cannot establish execution; keep those cases `available` or `unknown`.
+
 Environment evidence belongs in the execution-conditions section and collapsed appendix. It must not replace the scientific interpretation or validation target.
 
 ## Source
@@ -130,11 +132,11 @@ Environment evidence belongs in the execution-conditions section and collapsed a
 }
 ```
 
-Source kinds: `paper`, `official-code`, `third-party-code`, `dataset`, `documentation`, `skill`, `target-image`.
+Source kinds: `paper`, `official-code`, `third-party-code`, `dataset`, `documentation`, `skill`, `target-image`, `environment-audit`. Use `environment-audit` only for a redacted, route-specific local capability probe whose artifact is hashed and read by the builder.
 
 Access states: `local`, `downloadable`, `login-required`, `request-required`, `controlled`, `unavailable`, `not-found`.
 
-`access` describes the current upstream retrieval or reacquisition route. A populated `artifact` records a separately verified local copy, so a source may legitimately have both a local artifact and `access.state: login-required`. Use `local` when the source is available only as a user-provided or local artifact and no upstream retrieval state applies.
+`access` describes the current upstream retrieval or reacquisition route. A populated `artifact` records a separately verified local copy, so a source may legitimately have both a local artifact and `access.state: login-required`. Use `local` when the source is available only as a user-provided or local artifact and no upstream retrieval state applies. Before building, every artifact must include a real non-symlinked `sourcePath`, file name, media type, exact byte size, and lowercase SHA-256; the builder reads the file and rejects a missing, resized, or hash-mismatched artifact. `sourcePath` is removed from the built report.
 
 License states: `verified`, `declared`, `unknown`, `restricted`.
 
@@ -295,9 +297,9 @@ Every figure requires at least one validation target. A target must define the o
 
 ## Requirement
 
-Every route must reference exactly five readiness requirements in this order: `input`, `method`, `protocol`, `validation`, `environment`. They summarize whether that selected scientific plan can be executed; they do not replace `understanding`, `generationLogic`, or `validationTargets`. Environment comes last because it is an execution constraint, not the starting point for scientific understanding.
+Every route must cover all five readiness categories: `input`, `method`, `protocol`, `validation`, and `environment`. Do not force one row per category: a route may reference several concrete requirements in a category when that is scientifically useful. These conditions summarize whether the selected plan can be executed; they do not replace `understanding`, `generationLogic`, or `validationTargets`. Environment is an execution constraint, not the starting point for scientific understanding.
 
-The figure-level `requirements` array is a catalog and may contain multiple requirements in the same category when candidate routes use different data, implementations, protocols, validation criteria, or environments. A route's ordered `requirementIds` chooses one item from each category. Reuse an item only when the underlying condition is genuinely shared between routes.
+The figure-level `requirements` array is a catalog. A route's `requirementIds` selects the concrete conditions that apply to that route and must cover every category at least once. Reuse an item only when the underlying condition is genuinely shared between routes.
 
 ```json
 {
@@ -307,15 +309,19 @@ The figure-level `requirements` array is a catalog and may contain multiple requ
   "state": "derivable",
   "blocking": false,
   "detail": "Equations and principal parameters support an independently generated input.",
+  "resolution": {
+    "status": "frozen",
+    "basis": "Use the paper equations and the declared deterministic seed 2026."
+  },
   "evidenceRefs": ["src-paper"]
 }
 ```
 
 States: `verified`, `derivable`, `assumable`, `missing`, `not-required`.
 
-`missing` means an essential condition cannot currently be supplied or defensibly inferred. Use `assumable` for a declared, scientifically reasonable choice that changes uncertainty but does not invalidate the route. Render the `blocking` value explicitly.
+`missing` means an essential condition cannot currently be supplied or defensibly inferred and must use `blocking: true`. Use `assumable` for a declared, scientifically reasonable choice that changes uncertainty but does not invalidate the route. A `derivable` condition becomes execution-ready only when `resolution.status: "frozen"` records the exact derivation basis; an `assumable` condition becomes execution-ready only when `resolution.status: "accepted"` records the accepted basis. The evidence state remains derivable or assumable—it is not relabeled verified. A `verified` requirement must cite evidence. A derivable or assumable requirement must cite evidence or carry its documented resolution. Render both `blocking` and any resolution explicitly.
 
-Figure reproduction levels are `direct-recompute`, `mechanism-reproduction`, `alternative-validation`, `editable-reconstruction`, `image-derived-reconstruction`, and `original-case-blocked`. Each figure has exactly one level; candidate routes describe how they serve that level rather than declaring another level. Use `image-derived-reconstruction` only when the target's workflow mode has that same value.
+Figure reproduction levels are `direct-recompute`, `mechanism-reproduction`, `alternative-validation`, `editable-reconstruction`, `image-derived-reconstruction`, and `original-case-blocked`. Each figure has exactly one level; candidate routes describe how they serve that level rather than declaring another level. Use `image-derived-reconstruction` only when the target's workflow mode has that same value. `recommendedRouteId` identifies one non-blocked route whenever any non-blocked candidate exists. Set it to `null` only when every declared route is blocked. A blocked image-derived assessment remains `image-derived-reconstruction`; route readiness never changes it into `original-case-blocked`.
 
 ## Route
 
@@ -383,13 +389,13 @@ Every figure must declare at least one route. Non-blocked routes require at leas
 
 Keep `plan` to at most five concise execution steps. It describes the approved workflow, not shell commands.
 
-Route status: `ready`, `conditional`, `blocked`. `ready` means all five referenced requirements are `verified` or `not-required` and execution can begin without first deriving an input, authoring a missing implementation, or accepting a scientific assumption. Use `conditional` when the route is scientifically defensible but still requires a derivation, transparent assumption, new implementation or adapter, environment preparation, or another non-blocking prerequisite. Show blockers on the route card. Do not place shell, MATLAB, or Python commands in route fields.
+Route status: `ready`, `conditional`, `blocked`. Every non-blocked route must already have runnable scientific requirements: each referenced requirement is `verified`, `not-required`, a `derivable` condition with a frozen resolution, or an `assumable` condition with an accepted resolution. `ready` additionally requires every referenced environment to be route-level verified. Use `conditional` only for an authorized operational prerequisite such as preparing an isolated open-source environment or implementing the already specified adapter; it cannot defer an unresolved data, method, protocol, or validation decision to execution. Show blockers on the route card. Do not place shell, MATLAB, or Python commands in route fields.
 
 A `ready` route may reference only environments with status `verified`; detecting an installation as `available` is not enough. An `available` environment keeps a route `conditional` until route-level live verification succeeds. A `conditional` route may reference an `unknown` or `missing` environment only when its provisioning policy is `isolated-open-source` and the route declares the gated `install` effect. An unresolved `existing-only` environment makes the route `blocked` until the user supplies or verifies it outside the installation workflow. SciRepro never downloads proprietary installers, accepts licenses, or turns static product metadata into a runnable claim.
 
 Parameter types: `string`, `number`, `integer`, `boolean`, `enum`, `relative-path`. Parameter and generation origins: `paper`, `code`, `derived`, `assumption`, `user`.
 
-Effect IDs use a closed registry. Bounded automatic effects are `run-local-code` and `create-workspace-files`. Gated effects are `network`, `install`, `login`, `payment`, `upload`, `overwrite`, `gpu`, `shared-license`, and `external-publish`; every gated effect used by a route must appear in `consentRequiredEffects` and must never appear in `allowedEffects`. Use `shared-license` only when execution consumes a floating, institutional, or otherwise shared license; a local dedicated license can remain ordinary local execution. Declare all five estimate fields. Use a non-negative finite value or `null` when download, disk, runtime, or cost cannot yet be bounded; `gpu` is always boolean and must agree with the `gpu` effect. A positive download requires `network`, and a positive cost requires `payment`.
+Effect IDs use a closed registry. Bounded automatic effects are `run-local-code` and `create-workspace-files`. Gated effects are `network`, `install`, `login`, `payment`, `upload`, `overwrite`, `gpu`, `shared-license`, and `external-publish`; every gated effect used by a route must appear in `consentRequiredEffects` and must never appear in `allowedEffects`. Use `shared-license` only when execution consumes a floating, institutional, or otherwise shared license; a local dedicated license can remain ordinary local execution. Declare all five estimate fields. A blocked analysis route may use `null` for an amount that cannot yet be bounded. Every ready or conditional route must freeze non-negative finite values for download bytes, disk bytes, runtime minutes, and cost before it can be selected; `gpu` is always boolean and must agree with the `gpu` effect. Network routes therefore require a finite download bound, a positive download requires `network`, and a positive cost requires `payment`.
 
 ## Approval policy
 
@@ -453,6 +459,7 @@ The approval draft may select only IDs, parameters, deliverables, and effects al
 - Require every observation, input, generation step, validation target, requirement, environment, and figure evidence reference to resolve to a declared source.
 - Require every scientific-scope observation and validation reference to resolve within the same figure.
 - Require every recommended route to exist and be non-blocked.
+- Require a recommendation when any non-blocked route exists; permit a null recommendation only when every candidate route is blocked.
 - Require every route effect to be declared by `approvalPolicy`.
 - Remove `integrity.reportSha256` before deterministic JSON hashing, then restore the digest.
 - Require `audience: "local"` bundles to embed every target. Permit `omitted-rights` only in a public bundle and do not allow an omitted target to enter approval.

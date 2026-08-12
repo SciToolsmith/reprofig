@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import statistics
@@ -56,13 +57,22 @@ def require(condition: bool, message: str) -> None:
 
 
 def checked_user_path(raw: Path, purpose: str, *, must_exist: bool = True) -> Path:
-    """Resolve a user path only after rejecting every symlink component."""
+    """Resolve a user path while rejecting symlinks below a platform alias.
+
+    macOS exposes ``/tmp``, ``/var``, and ``/etc`` as root-owned aliases into
+    ``/private``.  Treat a leading root alias as part of the platform path, but
+    still reject every symlink beneath the resolved parent so a user-controlled
+    component cannot redirect acquisition outside the requested workspace.
+    """
     expanded = raw.expanduser()
     absolute = expanded if expanded.is_absolute() else Path.cwd() / expanded
     cursor = Path(absolute.anchor)
-    for part in absolute.parts[1:]:
+    for index, part in enumerate(absolute.parts[1:], start=1):
         cursor = cursor / part
         if cursor.is_symlink():
+            if index == 1 and cursor.parent == Path(cursor.anchor):
+                cursor = cursor.resolve(strict=True)
+                continue
             raise TargetError(f"{purpose} may not contain symlink components: {cursor}")
         if not cursor.exists():
             break
@@ -115,6 +125,26 @@ def write_json(path: Path, value: object) -> None:
         handle.write(payload)
         handle.flush()
     temporary.replace(path)
+
+
+def write_json_create_only(path: Path, value: object) -> None:
+    """Publish a new JSON file atomically without replacing an existing path."""
+    payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    require(path.parent.is_dir() and not path.parent.is_symlink(), f"output parent is unavailable: {path.parent}")
+    require(not path.exists() and not path.is_symlink(), f"output manifest already exists: {path}")
+    descriptor, raw_temporary = tempfile.mkstemp(prefix=f".{path.name}.staging-", dir=path.parent)
+    temporary = Path(raw_temporary)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # A same-directory hard link gives create-only atomic publication:
+        # readers see either no destination or the complete file, and a race
+        # cannot overwrite another process's output.
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def canonical_manifest(manifest: dict) -> bytes:
@@ -595,13 +625,28 @@ def validate_manifest(manifest: object, *, root: Optional[Path] = None, require_
                 )
         if identity_status == "resolved" or workflow_mode == "scientific-reproduction":
             require(acquisition_mode != "images-only", f"{target_id}: scientific identity requires a paper mode")
-            require(figure_number is not None, f"{target_id}: resolved identity requires one normalized figure reference")
-            require(isinstance(caption, str) and caption.strip(), f"{target_id}: resolved identity requires a caption")
-            caption_match = FIGURE_CAPTION.match(caption)
+            figure_reference = target.get("figureReference")
             require(
-                caption_match is not None and int(caption_match.group(1)) == figure_number,
-                f"{target_id}: caption and figure reference disagree",
+                isinstance(figure_reference, str) and figure_reference.strip(),
+                f"{target_id}: resolved identity requires a figure reference",
             )
+            require(isinstance(caption, str) and caption.strip(), f"{target_id}: resolved identity requires a caption")
+            if figure_number is not None:
+                caption_match = FIGURE_CAPTION.match(caption)
+                require(
+                    caption_match is not None and int(caption_match.group(1)) == figure_number,
+                    f"{target_id}: caption and figure reference disagree",
+                )
+            else:
+                binding = target.get("identityBinding")
+                require(
+                    isinstance(binding, dict)
+                    and binding.get("method") == "reviewed-manual-paper-metadata"
+                    and binding.get("status") == "verified"
+                    and binding.get("figureReference") == figure_reference
+                    and binding.get("caption") == caption,
+                    f"{target_id}: a non-numeric figure reference requires verified manual paper metadata",
+                )
             require(
                 isinstance(paper_page, int) and 1 <= paper_page <= paper["pageCount"],
                 f"{target_id}: resolved identity requires a valid paper page",
@@ -714,11 +759,85 @@ def mark_verified(manifest_path: Path, target_ids: list[str], caption_included: 
     return 0
 
 
+def parse_target_ids(value: Optional[str], label: str) -> Optional[list[str]]:
+    if value is None:
+        return None
+    target_ids = [item.strip() for item in value.split(",") if item.strip()]
+    require(target_ids, f"{label} must contain at least one target ID")
+    require(len(target_ids) <= MAX_TARGETS, f"{label} exceeds the {MAX_TARGETS}-target safety limit")
+    require(
+        all(TARGET_ID.fullmatch(target_id) is not None for target_id in target_ids),
+        f"{label} contains an invalid target ID",
+    )
+    require(len(target_ids) == len(set(target_ids)), f"{label} must not contain duplicates")
+    return target_ids
+
+
+def derive_verified_subset(
+    manifest_path: Path,
+    output_path: Path,
+    target_set_id: str,
+    selected_target_ids: Optional[list[str]],
+) -> int:
+    """Create a verified-only manifest view without copying target bytes."""
+    source = checked_user_path(manifest_path, "source target manifest", must_exist=True)
+    require(source.is_file() and not source.is_symlink(), "source target manifest must be a regular file")
+    destination = checked_user_path(output_path, "subset output manifest", must_exist=False)
+    require(
+        destination.parent == source.parent,
+        "subset output manifest must be in the source manifest directory so relative artifact paths remain valid",
+    )
+    require(destination != source, "subset output manifest must not replace the source manifest")
+    require(destination.suffix.lower() == ".json", "subset output manifest must use a .json extension")
+    require(TARGET_ID.fullmatch(target_set_id) is not None, "invalid --subset-target-set-id")
+
+    manifest = json.loads(source.read_text(encoding="utf-8"))
+    targets = validate_manifest(manifest, root=source.parent)
+    require(target_set_id != manifest.get("targetSetId"), "subset targetSetId must differ from the source targetSetId")
+
+    if selected_target_ids is None:
+        selected = {target_id for target_id, target in targets.items() if target.get("qaStatus") == "verified"}
+    else:
+        selected = set(selected_target_ids)
+        require(selected <= set(targets), f"unknown target IDs: {sorted(selected - set(targets))}")
+    require(selected, "verified subset must contain at least one target")
+    invalid_states = {
+        target_id: targets[target_id].get("qaStatus")
+        for target_id in selected
+        if targets[target_id].get("qaStatus") != "verified"
+    }
+    require(
+        not invalid_states,
+        f"verified subset cannot include pending or rejected targets: {invalid_states}",
+    )
+
+    derived = json.loads(json.dumps(manifest))
+    derived["targetSetId"] = target_set_id
+    derived["createdAt"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    derived["targets"] = [
+        target for target in derived["targets"] if target.get("targetId") in selected
+    ]
+    derived["targetCount"] = len(derived["targets"])
+    refresh_manifest_integrity(derived)
+    validate_manifest(derived, root=source.parent, require_verified=True)
+    write_json_create_only(destination, derived)
+    print(json.dumps({
+        "status": "verified-subset-created",
+        "sourceManifest": str(source),
+        "manifest": str(destination),
+        "targetSetId": target_set_id,
+        "targets": [target["targetId"] for target in derived["targets"]],
+    }, ensure_ascii=False))
+    return len(derived["targets"])
+
+
 def bind_uploaded_identity(
     manifest_path: Path,
     target_id: str,
-    figure_number: int,
+    figure_number: Optional[int],
     paper_page: Optional[int],
+    figure_label: Optional[str] = None,
+    manual_caption: Optional[str] = None,
 ) -> int:
     """Bind an uploaded candidate to indexed paper metadata, pending visual QA."""
     require_pdfplumber()
@@ -733,7 +852,18 @@ def bind_uploaded_identity(
     )
     paper = manifest.get("paper")
     require(isinstance(paper, dict), "identity binding requires a preserved paper")
-    require(figure_number >= 1, "--paper-figure-ref must be a positive integer")
+    manual_mode = figure_label is not None or manual_caption is not None
+    require(not (manual_mode and figure_number is not None), "choose numeric or manual figure identity binding, not both")
+    if manual_mode:
+        require(isinstance(figure_label, str) and figure_label.strip(), "manual binding requires --paper-figure-label")
+        require(len(figure_label.strip()) <= 256, "--paper-figure-label exceeds 256 characters")
+        require(not re.search(r"[\x00-\x1f\x7f]", figure_label), "--paper-figure-label contains control characters")
+        require(isinstance(manual_caption, str) and manual_caption.strip(), "manual binding requires --paper-caption")
+        require(len(manual_caption.strip()) <= 20000, "--paper-caption exceeds 20000 characters")
+        require(not re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", manual_caption), "--paper-caption contains control characters")
+        require(paper_page is not None, "manual binding requires --paper-page")
+    else:
+        require(isinstance(figure_number, int) and figure_number >= 1, "binding requires a positive --paper-figure-ref")
     preserved_paper = checked_manifest_child(
         manifest_path.parent, paper["originalPath"], "preserved paper"
     )
@@ -741,7 +871,13 @@ def bind_uploaded_identity(
 
     with pdfplumber.open(preserved_paper) as pdf:
         require(len(pdf.pages) == paper["pageCount"], "preserved paper page count changed")
-        if paper_page is not None:
+        if manual_mode:
+            require(1 <= paper_page <= len(pdf.pages), "--paper-page is outside the preserved paper")
+            matched_page = paper_page
+            caption = manual_caption.strip()
+            reference_text = figure_label.strip()
+            binding_method = "reviewed-manual-paper-metadata"
+        elif paper_page is not None:
             require(1 <= paper_page <= len(pdf.pages), "--paper-page is outside the preserved paper")
             result = caption_for(pdf.pages[paper_page - 1], figure_number)
             require(result is not None, f"Fig. {figure_number} caption was not found on paper page {paper_page}")
@@ -757,13 +893,16 @@ def bind_uploaded_identity(
                 len(matches) == 1,
                 f"Fig. {figure_number} matched multiple pages; provide --paper-page after reviewing the paper",
             )
-    matched_page, caption = matches[0]
+        if not manual_mode:
+            matched_page, caption = matches[0]
+            reference_text = f"Fig. {figure_number}"
+            binding_method = "reviewed-paper-index"
 
     prior_binding = target.get("identityBinding")
     if prior_binding is not None:
         target.setdefault("identityBindingHistory", []).append(json.loads(json.dumps(prior_binding)))
     target.update({
-        "figureReference": f"Fig. {figure_number}",
+        "figureReference": reference_text,
         "paperPage": matched_page,
         "caption": caption,
         "identityStatus": "unresolved",
@@ -773,15 +912,15 @@ def bind_uploaded_identity(
         "cropBoxPdfPoints": None,
         "identityBinding": {
             "boundAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-            "method": "reviewed-paper-index",
+            "method": binding_method,
             "status": "pending-visual-verification",
-            "figureReference": f"Fig. {figure_number}",
+            "figureReference": reference_text,
             "paperPage": matched_page,
             "caption": caption,
         },
     })
     target.setdefault("notes", []).append(
-        f"Candidate identity bound to Fig. {figure_number}, paper page {matched_page}; visual verification is still required."
+        f"Candidate identity bound to {reference_text}, paper page {matched_page}; visual verification is still required."
     )
     refresh_manifest_integrity(manifest)
     validate_manifest(manifest, root=manifest_path.parent)
@@ -790,7 +929,7 @@ def bind_uploaded_identity(
         "status": "identity-bound-needs-review",
         "manifest": str(manifest_path),
         "target": target_id,
-        "figureReference": f"Fig. {figure_number}",
+        "figureReference": reference_text,
         "paperPage": matched_page,
     }, ensure_ascii=False))
     return 0
@@ -1197,12 +1336,18 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--verify-targets", help="Comma-separated target IDs that were visually reviewed.")
     cli.add_argument("--verify-all", action="store_true", help="Verify every manifest target after reviewing the complete set.")
     cli.add_argument("--verified-caption-included", action="store_true", help="Record that the reviewed uploaded targets contain the complete original caption.")
+    cli.add_argument("--derive-subset-manifest", type=Path, help="Source manifest from which to derive a verified-only subset view.")
+    cli.add_argument("--subset-output", type=Path, help="New subset manifest path; must be beside the source manifest.")
+    cli.add_argument("--subset-targets", help="Optional comma-separated verified target IDs; defaults to every verified target.")
+    cli.add_argument("--subset-target-set-id", help="New targetSetId for the derived subset manifest.")
     cli.add_argument("--replace-manifest", type=Path, help="Replace one rejected automatic crop in an existing manifest.")
     cli.add_argument("--replace-target", help="Target ID to replace when using --replace-manifest.")
     cli.add_argument("--replacement-image", type=Path, help="Reviewed replacement image for --replace-target.")
     cli.add_argument("--bind-manifest", type=Path, help="Bind one uploaded paper target to reviewed paper metadata.")
     cli.add_argument("--bind-target", help="Target ID to bind when using --bind-manifest.")
     cli.add_argument("--paper-figure-ref", type=int, help="Positive paper figure number for identity binding.")
+    cli.add_argument("--paper-figure-label", help="Reviewed free-text paper figure label for manual identity binding, e.g. 'Fig. S1'.")
+    cli.add_argument("--paper-caption", help="Reviewed complete paper caption for manual identity binding.")
     cli.add_argument("--paper-page", type=int, help="Optional one-based paper page for an ambiguous identity binding.")
     return cli
 
@@ -1210,8 +1355,41 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     try:
-        special_modes = sum(bool(value) for value in (args.replace_manifest, args.verify_manifest, args.bind_manifest))
-        require(special_modes <= 1, "choose only one acquisition, replacement, verification, or binding mode")
+        subset_options_present = any(
+            value is not None for value in (args.subset_output, args.subset_targets, args.subset_target_set_id)
+        )
+        require(
+            args.derive_subset_manifest is not None or not subset_options_present,
+            "subset options require --derive-subset-manifest",
+        )
+        special_modes = sum(bool(value) for value in (
+            args.replace_manifest, args.verify_manifest, args.bind_manifest, args.derive_subset_manifest,
+        ))
+        require(
+            special_modes <= 1,
+            "choose only one acquisition, subset, replacement, verification, or binding mode",
+        )
+        if args.derive_subset_manifest:
+            require(
+                args.output is None and args.paper is None and not args.image and args.figures is None
+                and args.uploaded_figure_refs is None and args.replace_manifest is None
+                and args.verify_manifest is None and not args.verify_targets and not args.verify_all
+                and not args.verified_caption_included and args.bind_manifest is None
+                and args.bind_target is None and args.replace_target is None
+                and args.replacement_image is None and args.paper_figure_ref is None
+                and args.paper_figure_label is None and args.paper_caption is None
+                and args.paper_page is None,
+                "subset mode cannot acquire, replace, bind, or verify targets",
+            )
+            require(args.subset_output is not None, "subset mode requires --subset-output")
+            require(args.subset_target_set_id is not None, "subset mode requires --subset-target-set-id")
+            derive_verified_subset(
+                args.derive_subset_manifest,
+                args.subset_output,
+                args.subset_target_set_id,
+                parse_target_ids(args.subset_targets, "--subset-targets"),
+            )
+            return 0
         if args.bind_manifest:
             require(
                 args.output is None and args.paper is None and not args.image and args.figures is None
@@ -1223,12 +1401,25 @@ def main() -> int:
             )
             require(args.bind_target, "identity-binding mode requires --bind-target")
             require(
-                isinstance(args.paper_figure_ref, int) and args.paper_figure_ref >= 1,
-                "identity-binding mode requires a positive --paper-figure-ref",
+                bool(args.paper_figure_ref) != bool(args.paper_figure_label),
+                "identity-binding mode requires exactly one of --paper-figure-ref or --paper-figure-label",
+            )
+            require(
+                args.paper_figure_label is None or args.paper_caption is not None,
+                "--paper-figure-label requires --paper-caption",
+            )
+            require(
+                args.paper_caption is None or args.paper_figure_label is not None,
+                "--paper-caption requires --paper-figure-label",
             )
             require(args.paper_page is None or args.paper_page >= 1, "--paper-page must be positive")
             return bind_uploaded_identity(
-                args.bind_manifest, args.bind_target, args.paper_figure_ref, args.paper_page
+                args.bind_manifest,
+                args.bind_target,
+                args.paper_figure_ref,
+                args.paper_page,
+                args.paper_figure_label,
+                args.paper_caption,
             )
         if args.replace_manifest:
             require(
@@ -1236,7 +1427,8 @@ def main() -> int:
                 and args.uploaded_figure_refs is None and args.verify_manifest is None
                 and not args.verify_targets and not args.verify_all and not args.verified_caption_included
                 and args.bind_manifest is None and args.bind_target is None
-                and args.paper_figure_ref is None and args.paper_page is None,
+                and args.paper_figure_ref is None and args.paper_figure_label is None
+                and args.paper_caption is None and args.paper_page is None,
                 "replacement mode cannot acquire or verify targets",
             )
             require(args.replace_target and args.replacement_image, "replacement mode requires --replace-target and --replacement-image")
@@ -1248,7 +1440,8 @@ def main() -> int:
                 and args.uploaded_figure_refs is None and args.replace_manifest is None
                 and args.replace_target is None and args.replacement_image is None
                 and args.bind_manifest is None and args.bind_target is None
-                and args.paper_figure_ref is None and args.paper_page is None,
+                and args.paper_figure_ref is None and args.paper_figure_label is None
+                and args.paper_caption is None and args.paper_page is None,
                 "verification mode cannot acquire, replace, or bind targets",
             )
             require(not (args.verify_targets and args.verify_all), "choose --verify-targets or --verify-all, not both")
@@ -1261,7 +1454,8 @@ def main() -> int:
             return mark_verified(args.verify_manifest, selected, args.verified_caption_included)
         require(
             args.replace_target is None and args.replacement_image is None
-            and args.bind_target is None and args.paper_figure_ref is None and args.paper_page is None
+            and args.bind_target is None and args.paper_figure_ref is None
+            and args.paper_figure_label is None and args.paper_caption is None and args.paper_page is None
             and not args.verify_targets and not args.verify_all and not args.verified_caption_included,
             "mode-specific flags require --replace-manifest, --bind-manifest, or --verify-manifest",
         )

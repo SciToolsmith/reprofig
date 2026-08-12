@@ -36,30 +36,54 @@ Use $scirepro to reconstruct the visible curves, data, and layout in these image
 
 Every path first creates a `targets/` workspace with preserved sources, normalized PNGs, crop QA, and a hash manifest. Targets reliably matched to the paper and verified by QA use `scientific-reproduction`; images-only work uses the explicitly bounded `image-derived-reconstruction` mode.
 
-## What you receive
+## One evidence standard, adaptive workflow depth
 
-- **Verified target set** — source, page or user label, crop metadata, QA status, and hash for every target.
-- **Local investigation report** — all target images, interpretations, generation chains, routes, gaps, and local capabilities in one page.
-- **Reproduction routes** — explicit data, methods, protocols, assumptions, gaps, local conditions, and scientific validation criteria.
-- **Traceable results** — rerunnable code, generated figures, configuration, validation results, logs, and provenance.
+SciRepro chooses the smallest workflow that can answer the request. An actual reproduction task always starts with a **local web report that displays the targets**, while a figure explanation is not forced into a maximum-strength audit.
 
-## Report first. Execute second.
+| Depth | Use when | Report emphasis |
+|---|---|---|
+| **Explain / assess** | Meaning, generation logic, gaps, or likely feasibility only; no execution | Concise answer; materialize targets only when identity must be stabilized |
+| **Compact report** | One clear local route with known inputs/tools and no restricted action | Executability, frozen assumptions, acceptance criteria |
+| **Full audit** | Code/data/environment research, competing routes, uncertainty, or restricted actions | Evidence, routes, permission, budget, licenses, and risk |
 
-**Before approval:** verify the targets, investigate evidence, formulate routes, and generate a local report. The report displays every reproduction target and separates what is verified, derivable, transparently assumable, and genuinely missing.
+Shorter workflows do not weaken target identity, claim boundaries, provenance, or validation criteria. Login, payment, large downloads, GPU, overwrite, upload, and publication always require explicit approval.
 
-**After approval:** execute only the selected figures and routes. If the data, algorithm, environment, budget, or supported claim changes materially, SciRepro stops and asks again.
+## One task, one result directory
 
-## Two modes, two claim boundaries
+An approved run delivers exactly one `scirepro-run-<run-id>/`. Single- and multi-target runs use the same shape; optional empty directories are not created.
+
+```text
+scirepro-run-<run-id>/
+├── README.md              # Human entry: outcome, rerun steps, and limits
+├── manifest.json          # File hashes, statuses, provenance, and integrity
+├── report/                # Local result report required for complete/partial runs
+├── shared/                # Shared plan, environment, sources, code, config, logs
+└── targets/
+    └── <target-id>/
+        ├── result.json
+        ├── outputs/       # Reproduced figures and derived artifacts
+        ├── validation/    # Metrics, comparisons, and acceptance summary
+        └── derived/       # Digitized or image-derived data, when used
+```
+
+The bundle records three separate conclusions: **whether execution completed**, **whether validation passed**, and **whether the paper claim is supported**. “The code ran” therefore cannot silently become “the claim was reproduced.” A complete or partial run combines the pre-execution decision page with actual outcomes in the final local report. Failed, blocked, or cancelled work is not forced to carry an empty result page, but is still finalized as an inspectable diagnostic bundle.
+
+<details>
+<summary><strong>Modes and rights boundaries</strong></summary>
+
+### Two modes, two claim boundaries
 
 - **With a paper: scientific reproduction.** Reconstruct the data–method–protocol–plot chain and validate predefined trends, peaks, frequencies, modes, statistics, or mechanism relationships.
 - **Images only: image-derived reconstruction.** Trace, digitize, fit visible geometry, or rebuild layout, but claim only visible geometry and appearance—not recovery of the original data, method, experiment, or paper conclusion.
 
 The local report must display every target directly. A public/shareable report embeds image bytes only when redistribution rights are verified; otherwise it shows a rights notice without exposing local paths or content.
 
+</details>
+
 <p align="center">
-  <a href="scirepro/SKILL.md#evidence-model">Reproduction levels</a> ·
-  <a href="scirepro/SKILL.md#approval-gate">Approval boundary</a> ·
-  <a href="scirepro/SKILL.md#deliverables">Complete deliverables</a>
+  <a href="scirepro/SKILL.md#evidence-and-route-model">Reproduction levels</a> ·
+  <a href="scirepro/SKILL.md#permissions-and-approval">Approval boundary</a> ·
+  <a href="scirepro/references/run-bundle-contract.md">Run-bundle contract</a>
 </p>
 
 <details>

@@ -1,4 +1,4 @@
 interface:
   display_name: "SciRepro"
-  short_description: "物化目标图件，研判复现路线，并完成可验证、可追溯的科学复现"
-  default_prompt: "Use $scirepro to acquire and verify all target figures from my paper, figure references, or uploaded images; generate a local feasibility report with the targets; and wait for my route approval before execution."
+  short_description: "研判科研图件复现路线，并交付可验证、可追溯的复现结果"
+  default_prompt: "Use $scirepro to acquire or verify my target figures, choose the smallest sufficient assessment depth, show them in a local reproduction decision report, and wait for my scope-bound approval before reproduction."

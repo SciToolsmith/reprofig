@@ -4,10 +4,11 @@ Execution continues the verified Phase 0 target set and the analysis established
 
 ## Prepare the run
 
-- Validate the approval with `scripts/plan_gate.py --report <report.json> --approval <approval.json> --target-manifest <targets/manifest.json>`. This rechecks the current Phase 0 manifest and target bytes, but remains a stateless structural and integrity check rather than a replay-prevention store.
-- Before the first side effect, atomically claim `(reportSha256, approvalId, idempotencyKey)` in a persistent run ledger. Reject a previously claimed approval ID or idempotency key, including after process restart. Record the claim and terminal run status; never infer idempotency from a successful `plan_gate.py` exit alone.
-- Freeze report hash, target-manifest hash, verified target ID and normalized target hash, workflow mode, paper claim when applicable, generation or reconstruction chain, validation targets, source artifact hash, selected route, parameters, resource limits, and authorized effects.
-- Create a versioned run directory. Preserve original code and data read-only; place patches and generated files in separate paths.
+- When execution follows an approved Phase 1 route, validate it with `<skill-root>/scripts/plan_gate.py --report <report.json> --approval <approval.json> --target-manifest <targets/manifest.verified.json>`. This rechecks the admitted Phase 0 manifest and target bytes but is not a replay-prevention store.
+- Preserve successful stdout as `gate-result.json`. The `scirepro.gate-result/v1` record binds the exact approval-file hash, report and target-manifest hashes, output policy, effects, and selected target/route/deliverable scope; Phase 2 tooling should consume this verified record instead of reparsing an untrusted approval as authority.
+- Use a persistent approval/idempotency ledger only for gated, externally visible, costly, destructive, or otherwise non-idempotent effects. For a local create-only run, the new run ID, a non-existing output path, and the terminal run bundle are the idempotency boundary; do not build a global ledger solely for ceremony.
+- Freeze the fields that affect the selected route: target identity and bytes, workflow mode, generation/reconstruction chain, validation targets, source identity, parameters, resource limits, and authorized effects. Bind report and approval hashes when they exist. Do not manufacture `not-required` records for concepts that cannot affect the route.
+- Initialize the single staging directory defined by [run-bundle-contract.md](run-bundle-contract.md). Preserve original code and data read-only; place patches and generated files in their declared bundle paths.
 - Capture environment versions, package/toolbox lists, hardware, random seeds, locale, and relevant numerical backend settings.
 
 ## Confirm chain coverage
@@ -85,21 +86,10 @@ For `image-derived-reconstruction`, validate coordinate calibration, visible geo
 - Record warnings, failed attempts, and discrepancies.
 - If the plan changes materially, stop and regenerate the report and approval.
 
-## Result manifest
+## Final run bundle
 
-Record:
+Finish every attempted route as exactly one directory governed by [run-bundle-contract.md](run-bundle-contract.md). Use `<skill-root>/scripts/finalize_run_bundle.py`; never write `manifest.json` by hand.
 
-- report, target-manifest, and approval IDs/hashes;
-- target IDs, normalized target hashes, workflow modes, and target observations;
-- scientific question, paper claim, and evidence role only when paper-grounded;
-- source URLs, versions, licenses, and hashes;
-- environment and hardware;
-- exact commands and parameters;
-- inputs and derivations/assumptions;
-- generation-chain coverage and substituted, assumed, or uncovered stages;
-- outputs and validation metrics;
-- runtime, memory, disk, network, and cost;
-- patches and deviations;
-- claims supported, partially supported, unsupported, or not tested;
-- discrepancy interpretation, sensitivity or robustness findings, and evidence limits;
-- reusable artifacts and grounded follow-up research questions.
+The bundle must preserve report/approval bindings that exist, target identities and workflow modes, sources and licenses, environment and hardware, commands and parameters, inputs and assumptions, generation-chain coverage, outputs, validation, resources, patches, deviations, discrepancies, reusable artifacts, and evidence limits. Put cross-target material in `shared/` and target-only material in `targets/<target-id>/`. For a `complete` or `partial` run, pass the Phase 1 web-report directory to `finalize --result-report`; the finalizer binds it to the approved report and generates the terminal result page from the actual result and validation records. Do not require a result page for a run that never produced a complete or partial result.
+
+Operational, validation, and claim states are independent. Finalize blocked, failed, and cancelled attempts too; a terminal diagnostic bundle is preferable to scattered logs or an absent result. Only the validator may publish the staging directory to `scirepro-run-<run-id>/`.

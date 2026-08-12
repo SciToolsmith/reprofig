@@ -269,18 +269,32 @@
     return (figure.routes || []).find((route) => route.routeId === routeId);
   }
 
+  function requirementCanRun(requirement) {
+    if (!requirement) return false;
+    if (["verified", "not-required"].includes(requirement.state)) return true;
+    const expected = requirement.state === "derivable" ? "frozen" : requirement.state === "assumable" ? "accepted" : null;
+    return expected && requirement.resolution && requirement.resolution.status === expected &&
+      typeof requirement.resolution.basis === "string" && requirement.resolution.basis.trim().length > 0;
+  }
+
+  function routeHasBoundedEstimate(route) {
+    const estimate = route && route.estimated;
+    return estimate && ["downloadBytes", "diskBytes", "runtimeMinutes", "costUsd"]
+      .every((field) => Number.isFinite(estimate[field]) && estimate[field] >= 0);
+  }
+
   function routeIsBlocked(figure, route) {
     if (!route || route.status === "blocked" || (route.blockers || []).length) return true;
+    if (!routeHasBoundedEstimate(route)) return true;
     const blockingRequirements = new Set(
       (figure.requirements || []).filter((requirement) => requirement.blocking).map((requirement) => requirement.requirementId)
     );
     if ((route.requirementIds || []).some((requirementId) => blockingRequirements.has(requirementId))) return true;
     const requirementsById = new Map((figure.requirements || []).map((requirement) => [requirement.requirementId, requirement]));
-    const requirementStates = (route.requirementIds || [])
+    const routeRequirements = (route.requirementIds || [])
       .map((requirementId) => requirementsById.get(requirementId))
-      .filter(Boolean)
-      .map((requirement) => requirement.state);
-    if (route.status === "ready" && requirementStates.some((state) => !["verified", "not-required"].includes(state))) return true;
+      .filter(Boolean);
+    if (routeRequirements.some((requirement) => !requirementCanRun(requirement))) return true;
     const routeEnvironments = (route.environmentIds || [])
       .map((environmentId) => environmentsById.get(environmentId))
       .filter(Boolean);
@@ -296,7 +310,7 @@
 
   function defaultRoute(figure) {
     const recommended = routeFor(figure, figure.reproduction && figure.reproduction.recommendedRouteId);
-    if (recommended) return recommended;
+    if (recommended && !routeIsBlocked(figure, recommended)) return recommended;
     return (figure.routes || []).find((route) => !routeIsBlocked(figure, route)) || (figure.routes || [])[0] || null;
   }
 
@@ -517,7 +531,12 @@
       ["物化方式", materialization.method || (target.acquisitionMode === "paper-with-figure-references" ? "PDF 高分辨率渲染与裁切" : "目标图像规范化")],
       ["图像规格", `${dpiText} · ${captionText}`],
       ["质量核验", qaStatusLabels[qaStatus] || qaStatus || "未声明"],
-      ["报告分发", bundleStateLabels[figure.image && figure.image.bundleState] || (figure.image && figure.image.bundleState) || "未声明"]
+      ["报告分发", bundleStateLabels[figure.image && figure.image.bundleState] || (figure.image && figure.image.bundleState) || "未声明"],
+      ["展示图像", figure.image && figure.image.bundleState === "omitted-rights"
+        ? "未嵌入（版权限制）"
+        : figure.image && figure.image.displayProxy
+          ? "轻量视觉代理（目标哈希仍绑定原图）"
+          : "完整目标图"]
     ].forEach(([label, value]) => {
       const fact = node("div", "target-fact");
       append(fact, node("dt", null, label), node("dd", null, value));
@@ -742,7 +761,10 @@
         node("strong", null, requirement.label),
         node("small", null, requirementCategoryLabels[requirement.category] || requirement.category)
       );
-      append(row, state, labelCopy, node("span", "requirement-detail", requirement.detail));
+      const detail = requirement.resolution
+        ? `${requirement.detail} · ${requirement.resolution.status === "accepted" ? "已接受" : "已冻结"}：${requirement.resolution.basis}`
+        : requirement.detail;
+      append(row, state, labelCopy, node("span", "requirement-detail", detail));
       if (requirement.blocking) row.appendChild(node("span", "blocking-chip", "阻断"));
       requirements.appendChild(row);
     });
@@ -1027,9 +1049,14 @@
       const access = source.access && source.access.state ? source.access.state : "unknown";
       const license = source.license && (source.license.spdxId || source.license.name || source.license.state);
       append(item, node("strong", null, source.title), node("small", null, `${source.publisher || "来源未知"} · ${access} · ${license || "许可未知"}`));
+      if (source.access && (source.access.checkedAt || source.access.note)) {
+        item.appendChild(node("small", null, [source.access.checkedAt, source.access.note].filter(Boolean).join(" · ")));
+      }
+      if (source.note) item.appendChild(node("small", null, source.note));
       if (source.artifact && source.artifact.sha256) {
         const artifactHash = node("p", "appendix-artifact-hash");
-        append(artifactHash, node("span", null, "本地来源工件 SHA-256"), node("code", null, source.artifact.sha256));
+        const artifactLabel = `${source.artifact.fileName || "本地来源工件"} · ${formatBytes(source.artifact.sizeBytes)}`;
+        append(artifactHash, node("span", null, `${artifactLabel} · SHA-256`), node("code", null, source.artifact.sha256));
         item.appendChild(artifactHash);
       }
       sourceList.appendChild(item);

@@ -12,12 +12,18 @@ import math
 import re
 import shutil
 import sys
+import tempfile
 import zlib
 from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qsl, urlsplit
 
 from materialize_target_figures import TargetError as TargetManifestError
 from materialize_target_figures import validate_manifest as validate_target_manifest
+
+try:  # Phase 0 already requires Pillow; keep validation imports usable without it.
+    from PIL import Image
+except ImportError:  # pragma: no cover - depends on the selected local runtime
+    Image = None
 
 
 LEVELS = {
@@ -30,11 +36,15 @@ LEVELS = {
 }
 ENVIRONMENT_STATES = {"verified", "available", "unknown", "missing"}
 ENVIRONMENT_PROVISIONING = {"existing-only", "isolated-open-source"}
-SOURCE_KINDS = {"paper", "official-code", "third-party-code", "dataset", "documentation", "skill", "target-image"}
+SOURCE_KINDS = {
+    "paper", "official-code", "third-party-code", "dataset", "documentation", "skill", "target-image",
+    "environment-audit",
+}
 ACCESS_STATES = {"local", "downloadable", "login-required", "request-required", "controlled", "unavailable", "not-found"}
 LICENSE_STATES = {"verified", "declared", "unknown", "restricted"}
 REQUIREMENT_CATEGORIES = ["input", "method", "protocol", "validation", "environment"]
 REQUIREMENT_STATES = {"verified", "derivable", "assumable", "missing", "not-required"}
+REQUIREMENT_RESOLUTION_STATES = {"frozen", "accepted"}
 ROUTE_STATES = {"ready", "conditional", "blocked"}
 CONFIDENCE_LEVELS = {"high", "medium", "low"}
 ORIGINS = {"paper", "code", "derived", "assumption", "user"}
@@ -81,6 +91,7 @@ GENERIC_WINDOWS_PATH = re.compile(r"(?i)\b[A-Z]:[\\/][^\s\"'<>]*")
 UNC_PATH = re.compile(r"\\\\[^\\\s\"']+[\\/][^\s\"']*")
 URL_IN_TEXT = re.compile(r"https?://[^\s\"'<>]+")
 MAX_ASSET_BYTES = 25 * 1024 * 1024
+MAX_REPORT_IMAGE_EDGE = 4096
 MAX_TARGETS = 256
 ACQUISITION_MODES = {"paper-with-images", "paper-with-figure-references", "images-only"}
 WORKFLOW_MODES = {"scientific-reproduction", "image-derived-reconstruction"}
@@ -128,6 +139,11 @@ def evidence_refs(value: object, label: str, source_ids: set[str]) -> list[str]:
     return refs
 
 
+def source_is_usable_evidence(source: dict) -> bool:
+    """Exclude citations that are only missing or inaccessible locators."""
+    return isinstance(source.get("artifact"), dict) or source.get("access", {}).get("state") in {"local", "downloadable"}
+
+
 def finite_number(value: object, label: str, *, integer: bool = False, nullable: bool = False) -> int | float | None:
     if value is None and nullable:
         return None
@@ -162,6 +178,27 @@ def validate_estimate(value: object, route_id: str, effects: set[str]) -> None:
     require(not cost or "payment" in effects, f"{route_id}: a positive cost estimate requires the payment effect")
     if effects & NETWORK_DEPENDENT_EFFECTS:
         require("network" in effects, f"{route_id}: external effects also require the network effect")
+
+
+def requirement_can_run(requirement: dict) -> bool:
+    """Return whether a declared requirement is concrete enough to execute."""
+    state = requirement.get("state")
+    if state in {"verified", "not-required"}:
+        return True
+    resolution = requirement.get("resolution")
+    expected = {"derivable": "frozen", "assumable": "accepted"}.get(state)
+    return (
+        expected is not None
+        and isinstance(resolution, dict)
+        and resolution.get("status") == expected
+        and isinstance(resolution.get("basis"), str)
+        and bool(resolution["basis"].strip())
+    )
+
+
+def estimate_is_bounded(value: dict) -> bool:
+    """Return whether the executable route has finite declared resource bounds."""
+    return all(value.get(field) is not None for field in ("downloadBytes", "diskBytes", "runtimeMinutes", "costUsd"))
 
 
 def validate_parameter_spec(parameter: dict, route_id: str) -> None:
@@ -291,6 +328,7 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
 
     environment_ids = unique_ids(environments, "environmentId", "environment")
     source_ids = unique_ids(sources, "sourceId", "source")
+    sources_by_id = {source["sourceId"]: source for source in sources}
     unique_ids(figures, "figureId", "figure")
     generator = allow_keys(report.get("generator", {}), {"name", "version"}, "generator")
     integrity = allow_keys(report.get("integrity", {}), {"algorithm", "canonicalization", "reportSha256"}, "integrity")
@@ -359,6 +397,20 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
             non_empty_string(environment["detail"], f"environment {environment['environmentId']} detail")
         refs = string_list(environment.get("evidenceRefs", []), f"environment {environment['environmentId']} evidenceRefs", ids=True)
         require(set(refs) <= source_ids, f"environment {environment['environmentId']}: unknown evidence source")
+        require(
+            environment.get("status") != "verified" or bool(refs),
+            f"environment {environment['environmentId']}: verified status requires evidenceRefs",
+        )
+        if environment.get("status") == "verified":
+            require(
+                any(
+                    sources_by_id[source_id].get("kind") == "environment-audit"
+                    and isinstance(sources_by_id[source_id].get("artifact"), dict)
+                    and source_is_usable_evidence(sources_by_id[source_id])
+                    for source_id in refs
+                ),
+                f"environment {environment['environmentId']}: verified status requires a hashed environment-audit artifact",
+            )
     for source in sources:
         allow_keys(source, {"sourceId", "kind", "title", "publisher", "url", "access", "license", "artifact", "note"}, f"source {source.get('sourceId')}")
         require(source.get("kind") in SOURCE_KINDS, f"source {source['sourceId']}: invalid kind")
@@ -374,7 +426,42 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
         license_info = allow_keys(source.get("license", {}), {"state", "spdxId", "name", "url"}, f"source {source['sourceId']} license")
         require(license_info.get("state") in LICENSE_STATES, f"source {source['sourceId']}: invalid license state")
         if source.get("artifact") is not None:
-            allow_keys(source["artifact"], {"sourcePath", "relativePath", "fileName", "mediaType", "sizeBytes", "sha256"}, f"source {source['sourceId']} artifact")
+            artifact = allow_keys(
+                source["artifact"],
+                {"sourcePath", "relativePath", "fileName", "mediaType", "sizeBytes", "sha256"},
+                f"source {source['sourceId']} artifact",
+            )
+            required_artifact_fields = {"fileName", "mediaType", "sizeBytes", "sha256"}
+            require(
+                required_artifact_fields <= set(artifact),
+                f"source {source['sourceId']}: artifact is missing stable identity fields",
+            )
+            non_empty_string(artifact.get("fileName"), f"source {source['sourceId']} artifact fileName", max_length=1024)
+            non_empty_string(artifact.get("mediaType"), f"source {source['sourceId']} artifact mediaType", max_length=256)
+            size = finite_number(artifact.get("sizeBytes"), f"source {source['sourceId']} artifact sizeBytes", integer=True)
+            require(size >= 0, f"source {source['sourceId']}: artifact sizeBytes must be non-negative")
+            require(
+                isinstance(artifact.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]),
+                f"source {source['sourceId']}: artifact sha256 must be a lowercase SHA-256 digest",
+            )
+            relative_path = artifact.get("relativePath")
+            if relative_path is not None:
+                require(safe_relative(relative_path), f"source {source['sourceId']}: artifact relativePath is unsafe")
+            require(
+                relative_path is None,
+                f"source {source['sourceId']}: source artifacts are not copied by the report builder; omit relativePath",
+            )
+            source_path = artifact.get("sourcePath")
+            if allow_built_assets:
+                require(source_path is None, f"source {source['sourceId']}: built report must not retain artifact sourcePath")
+            else:
+                non_empty_string(source_path, f"source {source['sourceId']} artifact sourcePath")
+                candidate = Path(source_path).expanduser()
+                require(not candidate.is_symlink(), f"source {source['sourceId']}: artifact sourcePath cannot be a symlink")
+                resolved = candidate.resolve()
+                require(resolved.is_file(), f"source {source['sourceId']}: artifact sourcePath does not exist")
+                require(resolved.stat().st_size == size, f"source {source['sourceId']}: artifact size mismatch")
+                require(sha256_file(resolved) == artifact["sha256"], f"source {source['sourceId']}: artifact hash mismatch")
         validate_url(source.get("url"), f"source {source['sourceId']} URL")
         validate_url(source.get("license", {}).get("url"), f"source {source['sourceId']} license URL")
 
@@ -463,7 +550,7 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
         source_refs = evidence_refs(figure.get("sourceRefs"), f"{figure_id} sourceRefs", source_ids)
         require(bool(source_refs), f"{figure_id}: at least one figure source reference is required")
 
-        image = allow_keys(figure.get("image", {}), {"sourcePath", "relativePath", "sourceRef", "redistributionAllowed", "bundleState", "mediaType", "width", "height", "sizeBytes", "sha256", "metadataStripped"}, f"{figure_id} image")
+        image = allow_keys(figure.get("image", {}), {"sourcePath", "relativePath", "sourceRef", "redistributionAllowed", "bundleState", "mediaType", "width", "height", "sizeBytes", "sha256", "metadataStripped", "displayProxy"}, f"{figure_id} image")
         if image.get("sourceRef") is not None:
             require(image["sourceRef"] in source_ids, f"{figure_id}: image sourceRef does not resolve")
         if image.get("mediaType") is not None:
@@ -472,6 +559,7 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
             non_empty_string(image["sourcePath"], f"{figure_id} image sourcePath")
             require(image.get("mediaType") == "image/png", f"{figure_id}: bundled figure assets must declare mediaType image/png")
             require(image.get("relativePath") is None, f"{figure_id}: relativePath is builder output and cannot accompany sourcePath")
+            require("displayProxy" not in image, f"{figure_id}: displayProxy is builder output")
         elif allow_built_assets and image.get("relativePath") is not None:
             require(safe_relative(image["relativePath"]), f"{figure_id}: unsafe built image relativePath")
             require(image["relativePath"] == f"assets/{figure_id}.png", f"{figure_id}: built image path must be assets/{figure_id}.png")
@@ -479,6 +567,7 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
             require(isinstance(image.get("sizeBytes"), int) and image["sizeBytes"] > 0, f"{figure_id}: built image sizeBytes is invalid")
             require(isinstance(image.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", image["sha256"]), f"{figure_id}: built image SHA-256 is invalid")
             require(image.get("metadataStripped") is True, f"{figure_id}: built image must record metadata stripping")
+            require(isinstance(image.get("displayProxy"), bool), f"{figure_id}: built image displayProxy must be boolean")
             require(image.get("bundleState") in {"embedded-local", "embedded-public"}, f"{figure_id}: embedded image has invalid bundleState")
             require(image.get("bundleState") == ("embedded-local" if report["audience"] == "local" else "embedded-public"), f"{figure_id}: bundleState does not match report audience")
         elif allow_built_assets and image.get("bundleState") == "omitted-rights":
@@ -597,17 +686,52 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
         requirements = figure.get("requirements", [])
         require(isinstance(requirements, list) and 5 <= len(requirements) <= 80, f"{figure_id}: 5-80 route requirements are required")
         requirement_ids = unique_ids(requirements, "requirementId", f"{figure_id} requirement")
-        requirement_fields = {"requirementId", "category", "label", "state", "blocking", "detail", "evidenceRefs"}
+        requirement_fields = {
+            "requirementId", "category", "label", "state", "blocking", "detail", "evidenceRefs", "resolution",
+        }
+        required_requirement_fields = requirement_fields - {"resolution"}
         for requirement in requirements:
             requirement_id = requirement["requirementId"]
             allow_keys(requirement, requirement_fields, f"{figure_id} requirement {requirement_id}")
-            require(set(requirement) == requirement_fields, f"{requirement_id}: requirement fields are incomplete")
+            require(required_requirement_fields <= set(requirement), f"{requirement_id}: requirement fields are incomplete")
             non_empty_string(requirement.get("label"), f"{requirement_id} label", max_length=1024)
             non_empty_string(requirement.get("detail"), f"{requirement_id} detail")
             require(requirement.get("category") in REQUIREMENT_CATEGORIES, f"{requirement_id}: invalid requirement category")
             require(requirement.get("state") in REQUIREMENT_STATES, f"{figure_id}: invalid requirement state")
             require(isinstance(requirement.get("blocking"), bool), f"{requirement_id}: blocking must be boolean")
-            evidence_refs(requirement.get("evidenceRefs"), f"{requirement_id} evidenceRefs", source_ids)
+            require(
+                requirement.get("state") != "missing" or requirement.get("blocking") is True,
+                f"{requirement_id}: a missing condition must be blocking",
+            )
+            resolution = requirement.get("resolution")
+            if resolution is not None:
+                allow_keys(resolution, {"status", "basis"}, f"{requirement_id} resolution")
+                require(set(resolution) == {"status", "basis"}, f"{requirement_id}: resolution fields are incomplete")
+                require(
+                    requirement.get("state") in {"derivable", "assumable"},
+                    f"{requirement_id}: only derivable or assumable conditions may carry a resolution",
+                )
+                require(
+                    resolution.get("status") in REQUIREMENT_RESOLUTION_STATES,
+                    f"{requirement_id}: invalid resolution status",
+                )
+                expected_resolution = {"derivable": "frozen", "assumable": "accepted"}[requirement["state"]]
+                require(
+                    resolution.get("status") == expected_resolution,
+                    f"{requirement_id}: {requirement['state']} requirements require a {expected_resolution} resolution",
+                )
+                non_empty_string(resolution.get("basis"), f"{requirement_id} resolution basis")
+            refs = evidence_refs(requirement.get("evidenceRefs"), f"{requirement_id} evidenceRefs", source_ids)
+            state = requirement.get("state")
+            require(
+                state not in {"verified", "derivable", "assumable"} or bool(refs) or resolution is not None,
+                f"{requirement_id}: {state} requirement needs evidenceRefs or a documented resolution",
+            )
+            if state == "verified":
+                require(
+                    all(source_is_usable_evidence(sources_by_id[source_id]) for source_id in refs),
+                    f"{requirement_id}: verified evidence must cite a local, downloadable, or archived source",
+                )
 
         requirements_by_id = {item["requirementId"]: item for item in requirements}
 
@@ -619,10 +743,9 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
         recommended = reproduction.get("recommendedRouteId")
         if recommended is not None:
             require(recommended in route_ids, f"{figure_id}: recommended route does not exist")
-        elif reproduction.get("level") != "original-case-blocked":
-            raise ReportError(f"{figure_id}: a recommended route is required")
 
         recommended_flags: set[str] = set()
+        non_blocked_route_ids: set[str] = set()
         route_fields = {
             "routeId", "label", "status", "recommended", "scientificScope", "engine", "environmentIds",
             "requirementIds", "deliverables", "parameters", "effects", "estimated", "plan", "blockers",
@@ -638,6 +761,8 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
             non_empty_string(route.get("label"), f"{route_id} label", max_length=1024)
             require(route.get("status") in ROUTE_STATES, f"{route_id}: invalid route status")
             require(isinstance(route.get("recommended"), bool), f"{route_id}: recommended must be boolean")
+            if route["status"] != "blocked":
+                non_blocked_route_ids.add(route_id)
             if route["recommended"]:
                 recommended_flags.add(route_id)
             if route_id == recommended:
@@ -672,19 +797,26 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
             requirement_refs = string_list(route.get("requirementIds"), f"{route_id} requirementIds", ids=True)
             require(set(environment_refs) <= environment_ids, f"{route_id}: unknown environment reference")
             require(set(requirement_refs) <= requirement_ids, f"{route_id}: unknown requirement reference")
-            require(len(requirement_refs) == 5, f"{route_id}: exactly five route requirements are required")
             require(
-                [requirements_by_id[requirement_id]["category"] for requirement_id in requirement_refs] == REQUIREMENT_CATEGORIES,
-                f"{route_id}: requirement order must be {REQUIREMENT_CATEGORIES}",
+                len(requirement_refs) >= len(REQUIREMENT_CATEGORIES),
+                f"{route_id}: route requirements must cover all five readiness categories",
+            )
+            require(
+                {
+                    requirements_by_id[requirement_id]["category"]
+                    for requirement_id in requirement_refs
+                } == set(REQUIREMENT_CATEGORIES),
+                f"{route_id}: requirements must cover {REQUIREMENT_CATEGORIES}; categories may contain multiple conditions",
             )
             if route["status"] != "blocked":
                 require(
                     not any(requirements_by_id[requirement_id]["blocking"] for requirement_id in requirement_refs),
                     f"{route_id}: a non-blocked route cannot reference a blocking requirement",
                 )
-            referenced_requirement_states = {
-                requirements_by_id[requirement_id]["state"] for requirement_id in requirement_refs
-            }
+                require(
+                    all(requirement_can_run(requirements_by_id[requirement_id]) for requirement_id in requirement_refs),
+                    f"{route_id}: an executable route contains an unresolved requirement",
+                )
             effects = set(string_list(route.get("effects"), f"{route_id} effects", ids=True))
             require(effects <= CANONICAL_EFFECTS, f"{route_id}: unknown canonical effect")
             require(effects <= allowed_effects | consent_effects, f"{route_id}: undeclared effect")
@@ -693,10 +825,6 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
             ]
             referenced_environment_states = {environment["status"] for environment in referenced_environments}
             if route["status"] == "ready":
-                require(
-                    referenced_requirement_states <= {"verified", "not-required"},
-                    f"{route_id}: a ready route cannot depend on derivation, assumptions, or missing conditions",
-                )
                 require(
                     referenced_environment_states <= {"verified"},
                     f"{route_id}: a ready route requires route-level verified environments",
@@ -744,7 +872,22 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
                 non_empty_string(parameter.get("label"), f"{route_id} parameter label", max_length=1024)
                 validate_parameter_spec(parameter, route_id)
             validate_estimate(route.get("estimated"), route_id, effects)
+            if route["status"] != "blocked":
+                require(
+                    estimate_is_bounded(route["estimated"]),
+                    f"{route_id}: an executable route requires finite resource estimates before approval",
+                )
 
+        if recommended is None:
+            require(
+                not non_blocked_route_ids,
+                f"{figure_id}: a recommended route is required while a non-blocked candidate exists",
+            )
+        else:
+            require(
+                recommended in non_blocked_route_ids,
+                f"{figure_id}: recommended route must be non-blocked",
+            )
         expected_flags = {recommended} if recommended is not None else set()
         require(recommended_flags == expected_flags, f"{figure_id}: recommended flags must match recommendedRouteId")
 
@@ -824,6 +967,64 @@ def validate_sanitized_png(path: Path) -> None:
     allowed = {b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS"}
     chunks = png_chunks(path.read_bytes(), path.name)
     require(all(kind in allowed for kind, _, _ in chunks), f"{path.name}: built figure asset contains unsanitized PNG metadata")
+
+
+def png_dimensions(path: Path) -> tuple[int, int]:
+    payload = path.read_bytes()
+    chunks = png_chunks(payload, path.name)
+    require(chunks and chunks[0][0] == b"IHDR", f"{path.name}: PNG header is missing")
+    ihdr_start = chunks[0][1] + 8
+    width = int.from_bytes(payload[ihdr_start:ihdr_start + 4], "big")
+    height = int.from_bytes(payload[ihdr_start + 4:ihdr_start + 8], "big")
+    require(width > 0 and height > 0, f"{path.name}: invalid PNG dimensions")
+    return width, height
+
+
+def build_report_png(source: Path, destination: Path) -> tuple[int, int, bool]:
+    """Create a metadata-free report asset, using a visual proxy when needed.
+
+    The Phase 0 target remains bound by ``targetSha256``.  A proxy only keeps
+    an unusually large target displayable in the portable report; it is never
+    substituted for the scientific reproduction input.
+    """
+    sanitize_png(source, destination)
+    width, height = png_dimensions(destination)
+    if destination.stat().st_size <= MAX_ASSET_BYTES and max(width, height) <= MAX_REPORT_IMAGE_EDGE:
+        validate_sanitized_png(destination)
+        return width, height, False
+
+    require(Image is not None, "Pillow is required to create a report proxy for an oversized target image")
+    try:
+        with Image.open(source) as opened:
+            opened.load()
+            working = opened.convert("RGBA" if "A" in opened.getbands() else "RGB")
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ReportError(f"{source.name}: oversized target could not be decoded for a report proxy: {exc}") from exc
+
+    longest = max(working.size)
+    if longest > MAX_REPORT_IMAGE_EDGE:
+        scale = MAX_REPORT_IMAGE_EDGE / longest
+        working = working.resize(
+            (max(1, round(working.width * scale)), max(1, round(working.height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+
+    proxy_path = destination.with_name(f".{destination.name}.proxy")
+    try:
+        for _ in range(16):
+            working.save(proxy_path, format="PNG", optimize=True, compress_level=9)
+            sanitize_png(proxy_path, destination)
+            if destination.stat().st_size <= MAX_ASSET_BYTES:
+                validate_sanitized_png(destination)
+                return working.width, working.height, True
+            require(min(working.size) > 1, f"{source.name}: cannot create a report proxy below the asset limit")
+            working = working.resize(
+                (max(1, round(working.width * 0.8)), max(1, round(working.height * 0.8))),
+                Image.Resampling.LANCZOS,
+            )
+    finally:
+        proxy_path.unlink(missing_ok=True)
+    raise ReportError(f"{source.name}: report proxy still exceeds {MAX_ASSET_BYTES} bytes")
 
 
 def canonical_payload(report: dict) -> bytes:
@@ -1041,18 +1242,20 @@ def copy_figure_assets(report: dict, output: Path, asset_root: Path, audience: s
         # macOS /tmp -> /private/tmp do not create false positives.
         require(is_within(source, asset_root), f"{figure['figureId']}: image is outside the approved asset root")
         require(source.is_file(), f"{figure['figureId']}: image does not exist: {source}")
-        require(source.stat().st_size <= MAX_ASSET_BYTES, f"{figure['figureId']}: image exceeds {MAX_ASSET_BYTES} bytes")
         suffix = source.suffix.lower()
         require(
             suffix in SAFE_EXTENSIONS,
             f"{figure['figureId']}: unsupported image extension {suffix}; public bundles accept sanitized PNG only",
         )
         destination = assets / f"{figure['figureId']}.png"
-        sanitize_png(source, destination)
+        width, height, display_proxy = build_report_png(source, destination)
         image["relativePath"] = destination.relative_to(output).as_posix()
+        image["width"] = width
+        image["height"] = height
         image["sizeBytes"] = destination.stat().st_size
         image["sha256"] = sha256_file(destination)
         image["metadataStripped"] = True
+        image["displayProxy"] = display_proxy
         image["bundleState"] = "embedded-local" if audience == "local" else "embedded-public"
     return omitted
 
@@ -1070,13 +1273,19 @@ def main() -> int:
     args = parser.parse_args()
 
     input_path = args.input.expanduser().resolve()
-    output = args.output.expanduser().resolve()
+    final_output = args.output.expanduser().resolve()
+    staging: Path | None = None
+    committed = False
     try:
         require(input_path.is_file(), f"input file does not exist: {input_path}")
-        if output.exists():
-            require(output.is_dir() and not any(output.iterdir()), f"output directory must be new or empty: {output}")
-        else:
-            output.mkdir(parents=True)
+        if final_output.exists():
+            require(
+                final_output.is_dir() and not any(final_output.iterdir()),
+                f"output directory must be new or empty: {final_output}",
+            )
+        final_output.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=f".{final_output.name}.staging-", dir=final_output.parent))
+        output = staging
 
         report = json.loads(input_path.read_text(encoding="utf-8"))
         require(
@@ -1126,11 +1335,20 @@ def main() -> int:
             ],
         }
         write_json(output / "manifest.json", manifest)
-        print(json.dumps({"status": "ok", "output": str(output), "reportSha256": integrity["reportSha256"]}, ensure_ascii=False))
+        if final_output.exists():
+            # Preflight proved this path was an empty directory.  Leave it
+            # untouched until every report file and hash has validated.
+            final_output.rmdir()
+        staging.replace(final_output)
+        committed = True
+        print(json.dumps({"status": "ok", "output": str(final_output), "reportSha256": integrity["reportSha256"]}, ensure_ascii=False))
         return 0
     except (OSError, json.JSONDecodeError, ReportError) as exc:
         print(f"SciRepro report build failed: {exc}", file=sys.stderr)
         return 2
+    finally:
+        if not committed and staging is not None and staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 if __name__ == "__main__":
