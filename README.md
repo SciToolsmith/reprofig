@@ -1,100 +1,91 @@
+<div align="center">
+
 # SciRepro
 
-**English** | [简体中文](README.zh-CN.md)
+**从论文图件，回到可理解、可验证、可继续研究的过程。**
 
-**From published figures to reproducible research workflows.**
+**简体中文** · [English](README.en.md)
 
-SciRepro is a Codex skill that uses scientific figures as entry points into the research behind them. Given a paper and one to three target figures, it interprets what each figure shows and the role it plays in the paper's argument, reconstructs the data, method, parameters, and plotting protocol that produced it, evaluates the available evidence, and turns that analysis into an understandable, executable, verifiable, and traceable reproduction task.
+![Codex Skill](https://img.shields.io/badge/Codex-Skill-111827?style=flat-square)
+![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-2563EB?style=flat-square)
+[![MIT License](https://img.shields.io/badge/License-MIT-E5A50A?style=flat-square)](LICENSE)
 
-SciRepro aims to reproduce the research process and its key scientific phenomenon—not the pixels of the published image. After the researcher approves an evidence-backed route, it can execute the reproduction, validate the result against scientific criteria, and deliver the code, configuration, logs, environment record, and provenance needed to inspect, rerun, or extend the work.
+</div>
 
-A reproduced figure is not the endpoint. It is a documented bridge from a published claim to a research process that can be understood, questioned, adapted, and built upon.
+SciRepro 是一个面向 Codex 的科研图件复现 Skill。它把论文中的目标图视作**研究证据的入口**：先读懂图在说明什么，再还原生成它的数据、方法、参数与绘图流程，形成有证据支持的复现路线；经研究者批准后，执行并验证这条路线，交付可追溯的科研成果。
 
-> Understand the evidence. Reconstruct the process. Test the reported claim.
+> **不是把图画得像，而是让生成这张图的研究过程重新跑起来。**
 
-## What SciRepro does
+## 一眼看懂
 
-1. **Interpret the figure as scientific evidence.** Read the caption, axes, legends, panels, nearby text, equations, methods, and supplements to explain what the figure shows and what claim it supports.
-2. **Reconstruct how the figure was produced.** Trace the input data, preprocessing, method implementation, parameters, randomization, statistical procedure, plotting protocol, and dependencies between figures.
-3. **Form evidence-backed reproduction routes.** Combine evidence from the paper, code, data, public sources, and available local capabilities; distinguish what is verified, derivable, assumable, missing, or not required; assign one defensible reproduction level to each figure; and state the scientific scope and limits of every candidate route.
-4. **Execute and validate the research process.** After approval, run the selected route in an isolated workspace and evaluate units, axes, peaks, trends, modes, statistics, uncertainty, and other scientifically meaningful acceptance criteria.
-5. **Preserve a foundation for further research.** Record sources, assumptions, environments, patches, commands, and results so that researchers can compare implementations, replace data, test sensitivity, adapt methods, and design follow-up studies.
+| 输入 | 理解 | 重建 | 交付 |
+| --- | --- | --- | --- |
+| 论文 PDF / DOI<br>1–3 张目标图 | 图中现象<br>证据作用<br>论文主张 | 数据 → 方法 → 协议 → 验证<br>候选复现路线 | 本地研判报告<br>复现代码与图件<br>日志、环境与溯源记录 |
 
-## From a static figure to a research process
+它依次回答：**支持什么主张 → 如何生成 → 能复现到什么程度 → 如何验收**。
 
-A published figure compresses a long generative chain—inputs, preprocessing, equations or code, parameters, randomness, instruments, statistical choices, and plotting decisions—into a static image. SciRepro makes that hidden chain explicit so that the figure can be studied as the result of a research process rather than treated as an image to imitate.
+[![SciRepro 本地科研复现报告预览](docs/assets/report-preview.webp)](docs/assets/report-preview.webp)
 
-Scientific figure reproduction is therefore not the same as tracing the published image or fitting a curve to its pixels. A defensible reproduction needs evidence about:
+## 快速开始
 
-1. the exact, simulatable, or explicitly substituted input data;
-2. the method implementation or a derivable implementation route;
-3. parameters, preprocessing, randomization, and plotting protocol;
-4. the observable phenomenon and acceptance criteria that will count as successful validation;
-5. the route-specific runtime, packages, toolboxes, hardware, and licenses.
+### 1. 安装
 
-SciRepro organizes these conditions into an auditable evidence map. It does not silently guess when information is incomplete, and it does not declare a figure impossible merely because a per-figure author script, random seed, or cached output is missing.
+```text
+使用 $skill-installer 安装 https://github.com/SciToolsmith/scirepro/tree/main/scirepro
+```
 
-## Workflow
+### 2. 调用
+
+```text
+使用 $scirepro 分析这篇论文中的图 6、图 7 和图 11。
+先解释每张图的科学含义与证据作用，还原其生成链，
+给出可复现程度、候选路线和验证标准，并生成本地报告。
+在我批准具体路线前，不要开始完整复现。
+```
+
+## 工作流
 
 ```mermaid
 flowchart LR
-    A[Paper + target figures] --> B[Understand content and evidential role]
-    B --> C[Reconstruct the data-method-protocol chain]
-    C --> D[Form routes and scientific validation criteria]
-    D --> E[Audit route-relevant evidence and conditions]
-    E --> F[Generate local report]
-    F --> G{Researcher approval}
-    G -->|Revise| C
-    G -->|Approve route| H[Execute in an isolated workspace]
-    H --> I[Validate scientific phenomena]
-    I --> J[Deliver a traceable reproduction bundle]
+    A[论文 + 目标图件] --> B[理解图件与证据作用]
+    B --> C[还原生成链]
+    C --> D[定义验证目标]
+    D --> E[形成路线并核查证据]
+    E --> F[生成本地报告]
+    F --> G{研究者选择路线}
+    G -->|调整| C
+    G -->|批准| H[隔离执行]
+    H --> I[科学验收与可追溯交付]
 ```
 
-### Phase 1 — Understand, investigate, and plan
+第一阶段只负责**理解、调查、制定路线并生成报告**；第二阶段只执行研究者明确批准的图件和路线。
 
-- resolves the paper version and target figure IDs;
-- explains what each figure shows, why it appears in the paper, and which phenomenon or conclusion must be validated;
-- reconstructs the figure's data-method-protocol chain and upstream dependencies;
-- proposes explicit reproduction routes, assumptions, scientific scope, and validation criteria;
-- searches official sources before secondary implementations and inspects relevant code and data rather than merely collecting links;
-- verifies provenance, dataset identity, versions, licenses, and access conditions;
-- audits available local runtimes, packages, toolboxes, hardware, and compatible execution options;
-- records route-specific resource estimates and blockers;
-- generates a self-contained local HTML report and an approval draft, then stops before the full reproduction run.
+## 你会得到什么
 
-### Phase 2 — Reproduce and validate the approved route
-
-- validates the report hash, selected figures, route, assumptions, resource limits, and authorized effects;
-- works in an isolated, versioned run directory and preserves the original code and data;
-- documents derivations, assumptions, compatibility patches, commands, and discrepancies;
-- reproduces one figure at a time and validates the scientific phenomenon rather than relying on visual resemblance alone;
-- delivers generated figures together with the code, configuration, logs, environment details, validation results, and provenance needed to rerun the work.
-
-## Reproduction levels
-
-| Level | Meaning |
+| 第一阶段：研判报告 | 第二阶段：复现成果 |
 | --- | --- |
-| `direct-recompute` | The relevant implementation and paper-case input are available. |
-| `mechanism-reproduction` | The method or simulation can be reconstructed to test the reported mechanism. |
-| `alternative-validation` | A declared substitute dataset or implementation tests a narrower claim. |
-| `editable-reconstruction` | A diagram is rebuilt as editable native objects; this is not numerical reproduction. |
-| `original-case-blocked` | An irreducible original input, protected resource, instrument, or method detail is unavailable. |
+| 图件解读与论文主张 | 生成的新图件 |
+| 数据—方法—协议—验证链 | 可重新运行的代码与配置 |
+| 代码、数据、许可与来源核验 | 科学验收结果与差异说明 |
+| 本机能力、假设、缺口与候选路线 | 日志、环境锁定与溯源清单 |
 
-Each figure receives one level. SciRepro separately classifies every required condition as **verified**, **derivable**, **assumable**, **missing**, or **not required**, making clear both what has been reproduced and where the evidence stops.
+<details>
+<summary><strong>查看五级复现判定</strong></summary>
 
-## A foundation for follow-up research
+| 复现等级 | 适用情况 |
+| --- | --- |
+| `direct-recompute` | 作者实现与论文案例输入齐备，可直接复算。 |
+| `mechanism-reproduction` | 可由论文、代码与透明假设重建方法或仿真，验证核心机制。 |
+| `alternative-validation` | 用明确声明的替代数据或实现，验证范围更窄的可迁移结论。 |
+| `editable-reconstruction` | 将流程图或示意图重构为原生可编辑对象，不属于数值复现。 |
+| `original-case-blocked` | 原案例依赖不可获得的数据、受限资源、仪器或关键方法细节。 |
 
-SciRepro is designed to support more than one successful rerun. By making the figure's generating chain, assumptions, evidence limits, and validation criteria explicit, it gives researchers a traceable starting point for comparing implementations, replacing datasets, testing sensitivity, adapting methods, and designing follow-up studies. Reproduction does not automatically create new research; it makes the published work understandable enough to build on responsibly.
+每项条件还会被标记为：**已核验 · 可推导 · 可合理假设 · 缺失 · 不需要**。未公开的参数不等于自动阻断；能够科学推导或透明设定的内容会被明确记录。
 
-## Installation
+</details>
 
-Ask Codex to install the inner `scirepro/` skill directory with the built-in Skill Installer:
-
-```text
-Use $skill-installer to install https://github.com/SciToolsmith/scirepro/tree/main/scirepro.
-```
-
-For a manual personal installation, copy the `scirepro/` directory into your Codex skills directory:
+<details>
+<summary><strong>手动安装</strong></summary>
 
 ```bash
 git clone https://github.com/SciToolsmith/scirepro.git
@@ -102,68 +93,52 @@ mkdir -p ~/.codex/skills
 cp -R ./scirepro/scirepro ~/.codex/skills/scirepro
 ```
 
-The installed directory must contain `scirepro/SKILL.md`; do not install the outer repository directory as the skill. Codex normally discovers newly installed skills automatically. If it does not appear in `/skills`, restart Codex.
+</details>
 
-SciRepro's helper scripts require Python 3.9 or newer and use only the Python standard library. MATLAB, Python packages, and other scientific runtimes needed by a target paper are audited separately and are not bundled with this repository.
+<details>
+<summary><strong>执行边界与研究者控制</strong></summary>
 
-### Upgrading from ReproFig
+SciRepro 会优先检查本机已有环境，并只为已形成科学依据的路线评估下载、安装、计算和授权需求。以下操作不会被静默执行：
 
-Install `scirepro` first and confirm that `$scirepro` appears in Codex. Then remove or disable the old `~/.codex/skills/reprofig` directory so the two similarly described skills do not trigger together. The old `$reprofig` invocation is not an alias and is not redirected automatically.
+- 用未经批准的算法或数据替换原路线；
+- 把替代数据结果称为原论文实验；
+- 安装专有软件、接受许可证、登录或付费；
+- 上传私有材料、联系第三方或公开发布；
+- 超出批准的计算、网络、存储或覆盖范围；
+- 仅凭像素相似度宣称复现成功。
 
-## Usage
+</details>
 
-Provide a paper PDF or DOI and one to three target figures:
-
-```text
-Use $scirepro to study Figures 6, 7, and 11 from this paper.
-Explain what each figure demonstrates, reconstruct its data-method-protocol-validation chain,
-assess the available reproduction routes, and generate the local report first.
-Wait for my approval before executing a route.
-```
-
-The Phase 1 report contains the figure interpretation and argumentative role, reproduction level, evidence map, code and data sources, local capability check, access and license status, assumptions, blockers, scientific validation target, resource estimate, and proposed routes. An approved Phase 2 run adds the generated figures, reproducible code and configuration, validation results, logs, environment details, and provenance.
-
-## Execution safeguards and researcher control
-
-Environment checks, bounded downloads, isolated environments, resource estimates, and approval gates protect the execution of a scientifically justified route; they are not substitutes for understanding the figure or reconstructing the research process.
-
-During investigation, SciRepro first checks existing local software and may inspect bounded public artifacts or create an isolated open-source environment within the investigation budget. Large or controlled-access downloads, proprietary software, license acceptance, login, payment, uploads, material route changes, and effects beyond the approved compute, storage, network, or overwrite limits remain explicit researcher decisions.
-
-SciRepro does not silently:
-
-- replace the requested algorithm with an unofficial port;
-- substitute another dataset and call it the original experiment;
-- install proprietary software or accept license terms;
-- log in, pay, upload private material, or contact third parties;
-- exceed approved compute, download, storage, or overwrite limits;
-- claim success from pixel similarity alone.
-
-## Repository structure
+<details>
+<summary><strong>仓库结构</strong></summary>
 
 ```text
 .
-├── README.md
-├── README.zh-CN.md
+├── README.md                 # 默认中文说明
+├── README.en.md              # English
+├── docs/assets/              # README 预览资源
 ├── LICENSE
 └── scirepro/
     ├── SKILL.md
     ├── agents/openai.yaml
     ├── assets/research-report-web/
     ├── references/
-    │   ├── investigation-schema.md
-    │   ├── source-environment-audit.md
-    │   ├── permission-gates.md
-    │   ├── web-report-contract.md
-    │   └── execution-validation.md
     └── scripts/
-        ├── probe_environment.py
-        ├── inspect_artifact.py
-        ├── build_report.py
-        └── plan_gate.py
 ```
 
-The Markdown references define the evidence, permission, reporting, and execution contracts. The scripts provide deterministic environment probing, safe artifact inspection, report generation, and approval-plan validation.
+Skill 辅助脚本需要 Python 3.9 或更高版本，并且只使用 Python 标准库。目标论文所需的 MATLAB、Python 软件包或其他科研运行环境会按路线单独核查。
 
-## License
+</details>
 
-[MIT](LICENSE) © 2026 SciToolsmith. The license covers this repository's original instructions, scripts, and report template. Papers, datasets, third-party code, and generated research artifacts retain their respective rights and licenses.
+<details>
+<summary><strong>从 ReproFig 升级</strong></summary>
+
+先安装 `scirepro` 并确认 `$scirepro` 已出现，再删除或停用旧的 `~/.codex/skills/reprofig`。旧调用名 `$reprofig` 不会自动重定向。
+
+</details>
+
+完整工作契约与实现细节见 [scirepro/SKILL.md](scirepro/SKILL.md)。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 SciToolsmith。论文、数据集、第三方代码和生成的科研成果仍遵循各自的版权与许可证。
