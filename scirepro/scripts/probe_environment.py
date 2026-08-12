@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Privacy-preserving discovery of local runtimes and hardware for ReproFig."""
+"""Privacy-preserving discovery of local runtimes and hardware for SciRepro."""
 
 from __future__ import annotations
 

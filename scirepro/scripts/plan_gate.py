@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate that a ReproFig approval is a safe subset of its report."""
+"""Validate that a SciRepro approval is a safe subset of its report."""
 
 from __future__ import annotations
 
@@ -300,11 +300,11 @@ def main() -> int:
         }, ensure_ascii=False, indent=2))
         return 0
     except (OSError, UnicodeError, json.JSONDecodeError, GateError, ReportValidationError, KeyError, AttributeError, TypeError, ValueError, OverflowError, RecursionError) as exc:
-        print(f"ReproFig approval rejected: {safe_error_message(exc)}", file=sys.stderr)
+        print(f"SciRepro approval rejected: {safe_error_message(exc)}", file=sys.stderr)
         return 2
     except Exception:
         # Approval files are untrusted input. Fail closed without exposing a traceback.
-        print("ReproFig approval rejected: malformed approval or report", file=sys.stderr)
+        print("SciRepro approval rejected: malformed approval or report", file=sys.stderr)
         return 2
 
 

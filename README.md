@@ -1,18 +1,18 @@
-# ReproFig
+# SciRepro
 
 **English** | [简体中文](README.zh-CN.md)
 
 **From published figures to reproducible research workflows.**
 
-ReproFig is a Codex skill that uses scientific figures as entry points into the research behind them. Given a paper and one to three target figures, it interprets what each figure shows and the role it plays in the paper's argument, reconstructs the data, method, parameters, and plotting protocol that produced it, evaluates the available evidence, and turns that analysis into an understandable, executable, verifiable, and traceable reproduction task.
+SciRepro is a Codex skill that uses scientific figures as entry points into the research behind them. Given a paper and one to three target figures, it interprets what each figure shows and the role it plays in the paper's argument, reconstructs the data, method, parameters, and plotting protocol that produced it, evaluates the available evidence, and turns that analysis into an understandable, executable, verifiable, and traceable reproduction task.
 
-ReproFig aims to reproduce the research process and its key scientific phenomenon—not the pixels of the published image. After the researcher approves an evidence-backed route, it can execute the reproduction, validate the result against scientific criteria, and deliver the code, configuration, logs, environment record, and provenance needed to inspect, rerun, or extend the work.
+SciRepro aims to reproduce the research process and its key scientific phenomenon—not the pixels of the published image. After the researcher approves an evidence-backed route, it can execute the reproduction, validate the result against scientific criteria, and deliver the code, configuration, logs, environment record, and provenance needed to inspect, rerun, or extend the work.
 
 A reproduced figure is not the endpoint. It is a documented bridge from a published claim to a research process that can be understood, questioned, adapted, and built upon.
 
 > Understand the evidence. Reconstruct the process. Test the reported claim.
 
-## What ReproFig does
+## What SciRepro does
 
 1. **Interpret the figure as scientific evidence.** Read the caption, axes, legends, panels, nearby text, equations, methods, and supplements to explain what the figure shows and what claim it supports.
 2. **Reconstruct how the figure was produced.** Trace the input data, preprocessing, method implementation, parameters, randomization, statistical procedure, plotting protocol, and dependencies between figures.
@@ -22,7 +22,7 @@ A reproduced figure is not the endpoint. It is a documented bridge from a publis
 
 ## From a static figure to a research process
 
-A published figure compresses a long generative chain—inputs, preprocessing, equations or code, parameters, randomness, instruments, statistical choices, and plotting decisions—into a static image. ReproFig makes that hidden chain explicit so that the figure can be studied as the result of a research process rather than treated as an image to imitate.
+A published figure compresses a long generative chain—inputs, preprocessing, equations or code, parameters, randomness, instruments, statistical choices, and plotting decisions—into a static image. SciRepro makes that hidden chain explicit so that the figure can be studied as the result of a research process rather than treated as an image to imitate.
 
 Scientific figure reproduction is therefore not the same as tracing the published image or fitting a curve to its pixels. A defensible reproduction needs evidence about:
 
@@ -32,7 +32,7 @@ Scientific figure reproduction is therefore not the same as tracing the publishe
 4. the observable phenomenon and acceptance criteria that will count as successful validation;
 5. the route-specific runtime, packages, toolboxes, hardware, and licenses.
 
-ReproFig organizes these conditions into an auditable evidence map. It does not silently guess when information is incomplete, and it does not declare a figure impossible merely because a per-figure author script, random seed, or cached output is missing.
+SciRepro organizes these conditions into an auditable evidence map. It does not silently guess when information is incomplete, and it does not declare a figure impossible merely because a per-figure author script, random seed, or cached output is missing.
 
 ## Workflow
 
@@ -80,38 +80,42 @@ flowchart LR
 | `editable-reconstruction` | A diagram is rebuilt as editable native objects; this is not numerical reproduction. |
 | `original-case-blocked` | An irreducible original input, protected resource, instrument, or method detail is unavailable. |
 
-Each figure receives one level. ReproFig separately classifies every required condition as **verified**, **derivable**, **assumable**, **missing**, or **not required**, making clear both what has been reproduced and where the evidence stops.
+Each figure receives one level. SciRepro separately classifies every required condition as **verified**, **derivable**, **assumable**, **missing**, or **not required**, making clear both what has been reproduced and where the evidence stops.
 
 ## A foundation for follow-up research
 
-ReproFig is designed to support more than one successful rerun. By making the figure's generating chain, assumptions, evidence limits, and validation criteria explicit, it gives researchers a traceable starting point for comparing implementations, replacing datasets, testing sensitivity, adapting methods, and designing follow-up studies. Reproduction does not automatically create new research; it makes the published work understandable enough to build on responsibly.
+SciRepro is designed to support more than one successful rerun. By making the figure's generating chain, assumptions, evidence limits, and validation criteria explicit, it gives researchers a traceable starting point for comparing implementations, replacing datasets, testing sensitivity, adapting methods, and designing follow-up studies. Reproduction does not automatically create new research; it makes the published work understandable enough to build on responsibly.
 
 ## Installation
 
-Ask Codex to install the inner `reprofig/` skill directory with the built-in Skill Installer:
+Ask Codex to install the inner `scirepro/` skill directory with the built-in Skill Installer:
 
 ```text
-Use $skill-installer to install https://github.com/SciToolsmith/reprofig/tree/main/reprofig.
+Use $skill-installer to install https://github.com/SciToolsmith/scirepro/tree/main/scirepro.
 ```
 
-For a manual personal installation, copy the `reprofig/` directory into your Codex skills directory:
+For a manual personal installation, copy the `scirepro/` directory into your Codex skills directory:
 
 ```bash
-git clone https://github.com/SciToolsmith/reprofig.git
+git clone https://github.com/SciToolsmith/scirepro.git
 mkdir -p ~/.codex/skills
-cp -R ./reprofig/reprofig ~/.codex/skills/reprofig
+cp -R ./scirepro/scirepro ~/.codex/skills/scirepro
 ```
 
-The installed directory must contain `reprofig/SKILL.md`; do not install the outer repository directory as the skill. Codex normally discovers newly installed skills automatically. If it does not appear in `/skills`, restart Codex.
+The installed directory must contain `scirepro/SKILL.md`; do not install the outer repository directory as the skill. Codex normally discovers newly installed skills automatically. If it does not appear in `/skills`, restart Codex.
 
-ReproFig's helper scripts require Python 3.9 or newer and use only the Python standard library. MATLAB, Python packages, and other scientific runtimes needed by a target paper are audited separately and are not bundled with this repository.
+SciRepro's helper scripts require Python 3.9 or newer and use only the Python standard library. MATLAB, Python packages, and other scientific runtimes needed by a target paper are audited separately and are not bundled with this repository.
+
+### Upgrading from ReproFig
+
+Install `scirepro` first and confirm that `$scirepro` appears in Codex. Then remove or disable the old `~/.codex/skills/reprofig` directory so the two similarly described skills do not trigger together. The old `$reprofig` invocation is not an alias and is not redirected automatically.
 
 ## Usage
 
 Provide a paper PDF or DOI and one to three target figures:
 
 ```text
-Use $reprofig to study Figures 6, 7, and 11 from this paper.
+Use $scirepro to study Figures 6, 7, and 11 from this paper.
 Explain what each figure demonstrates, reconstruct its data-method-protocol-validation chain,
 assess the available reproduction routes, and generate the local report first.
 Wait for my approval before executing a route.
@@ -123,9 +127,9 @@ The Phase 1 report contains the figure interpretation and argumentative role, re
 
 Environment checks, bounded downloads, isolated environments, resource estimates, and approval gates protect the execution of a scientifically justified route; they are not substitutes for understanding the figure or reconstructing the research process.
 
-During investigation, ReproFig first checks existing local software and may inspect bounded public artifacts or create an isolated open-source environment within the investigation budget. Large or controlled-access downloads, proprietary software, license acceptance, login, payment, uploads, material route changes, and effects beyond the approved compute, storage, network, or overwrite limits remain explicit researcher decisions.
+During investigation, SciRepro first checks existing local software and may inspect bounded public artifacts or create an isolated open-source environment within the investigation budget. Large or controlled-access downloads, proprietary software, license acceptance, login, payment, uploads, material route changes, and effects beyond the approved compute, storage, network, or overwrite limits remain explicit researcher decisions.
 
-ReproFig does not silently:
+SciRepro does not silently:
 
 - replace the requested algorithm with an unofficial port;
 - substitute another dataset and call it the original experiment;
@@ -141,10 +145,10 @@ ReproFig does not silently:
 ├── README.md
 ├── README.zh-CN.md
 ├── LICENSE
-└── reprofig/
+└── scirepro/
     ├── SKILL.md
     ├── agents/openai.yaml
-    ├── assets/feasibility-web/
+    ├── assets/research-report-web/
     ├── references/
     │   ├── investigation-schema.md
     │   ├── source-environment-audit.md
