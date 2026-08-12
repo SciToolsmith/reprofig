@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="520" viewBox="0 0 720 520" role="img" aria-labelledby="title desc">
+  <title id="title">SciRepro：从论文图件回到研究过程</title>
+  <desc id="desc">理解证据，追溯生成链，制定复现路线，并以科学标准验收。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1321"/>
+      <stop offset="1" stop-color="#172238"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#73a7ff"/>
+      <stop offset="1" stop-color="#63dfd4"/>
+    </linearGradient>
+    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse">
+      <path d="M36 0H0V36" fill="none" stroke="#ffffff" stroke-opacity="0.035"/>
+    </pattern>
+  </defs>
+  <rect width="720" height="520" rx="28" fill="url(#bg)"/>
+  <rect width="720" height="520" rx="28" fill="url(#grid)"/>
+  <circle cx="690" cy="40" r="170" fill="#4b7bec" opacity="0.08"/>
+  <circle cx="60" cy="520" r="180" fill="#38c4bb" opacity="0.06"/>
+
+  <g transform="translate(58 54)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
+    <rect width="48" height="48" rx="14" fill="url(#accent)"/>
+    <text x="24" y="32" text-anchor="middle" fill="#0d1321" font-size="19" font-weight="800">SR</text>
+    <text x="64" y="22" fill="#f6f8fc" font-size="25" font-weight="760">SciRepro</text>
+    <text x="65" y="43" fill="#8f9db3" font-size="10" font-weight="650" letter-spacing="1.8">SCIENTIFIC FIGURE REPRODUCTION</text>
+
+    <text x="0" y="132" fill="#f6f8fc" font-size="43" font-weight="760">从论文图件，</text>
+    <text x="0" y="187" fill="#f6f8fc" font-size="43" font-weight="760">回到研究过程</text>
+    <text x="0" y="229" fill="#aab5c7" font-size="23">理解证据 · 追溯生成链 · 科学验收</text>
+
+    <rect x="0" y="278" width="604" height="58" rx="18" fill="#ffffff" fill-opacity="0.045" stroke="#ffffff" stroke-opacity="0.10"/>
+    <text x="302" y="315" text-anchor="middle" fill="#9dc0ff" font-size="22" font-weight="650">证据  →  生成链  →  路线  →  验收</text>
+
+    <line x1="0" y1="366" x2="604" y2="366" stroke="#ffffff" stroke-opacity="0.10"/>
+    <text x="0" y="414" fill="#dbe2ed" font-size="23" font-weight="620">复现研究过程，而不是描摹像素。</text>
+  </g>
+</svg>
