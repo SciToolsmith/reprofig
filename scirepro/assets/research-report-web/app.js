@@ -1,9 +1,9 @@
 (function () {
   "use strict";
 
-  const report = window.__REPROFIG_REPORT__;
+  const report = window.__SCIREPRO_REPORT__ || window.__REPROFIG_REPORT__;
   if (!report || report.schemaVersion !== "reprofig.report/v2") {
-    document.body.textContent = "ReproFig 报告数据无效。";
+    document.body.textContent = "SciRepro 报告数据无效。";
     return;
   }
 
@@ -851,7 +851,7 @@
     const blob = new Blob([`${JSON.stringify(approval, null, 2)}\n`], { type: "application/json" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `${approvalId}.reprofig-approval.json`;
+    link.download = `${approvalId}.scirepro-approval.json`;
     document.body.appendChild(link);
     link.click();
     link.remove();

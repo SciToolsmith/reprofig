@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate ReproFig report JSON and build a portable scientific investigation report."""
+"""Validate SciRepro report JSON and build a portable scientific investigation report."""
 
 from __future__ import annotations
 
@@ -266,7 +266,7 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
         "schemaVersion", "reportId", "generatedAt", "generator", "workflow", "integrity",
         "paper", "summary", "environment", "sources", "figures", "approvalPolicy",
     }, "report")
-    require(report.get("schemaVersion") == "reprofig.report/v2", "unsupported schemaVersion; regenerate legacy reports with the current ReproFig skill")
+    require(report.get("schemaVersion") == "reprofig.report/v2", "unsupported schemaVersion; regenerate legacy reports with the current SciRepro skill")
     require(isinstance(report.get("reportId"), str) and ID_PATTERN.fullmatch(report["reportId"]), "invalid reportId")
     workflow = report.get("workflow", {})
     allow_keys(workflow, {"stage", "executionAllowed", "approvalRequired"}, "workflow")
@@ -824,7 +824,7 @@ def main() -> int:
         integrity["canonicalization"] = "json-sort-keys-v1"
         integrity["reportSha256"] = hashlib.sha256(canonical_payload(report)).hexdigest()
 
-        template = Path(__file__).resolve().parent.parent / "assets" / "feasibility-web"
+        template = Path(__file__).resolve().parent.parent / "assets" / "research-report-web"
         for name in ("index.html", "app.js", "styles.css"):
             source = template / name
             require(source.is_file(), f"missing report template: {source}")
@@ -833,7 +833,7 @@ def main() -> int:
         write_json(output / "report.json", report)
         data = json.dumps(report, ensure_ascii=False, separators=(",", ":"))
         data = data.replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
-        (output / "report-data.js").write_text(f'"use strict";\nwindow.__REPROFIG_REPORT__ = {data};\n', encoding="utf-8")
+        (output / "report-data.js").write_text(f'"use strict";\nwindow.__SCIREPRO_REPORT__ = {data};\n', encoding="utf-8")
 
         generated_files = ["index.html", "app.js", "styles.css", "report-data.js", "report.json"]
         generated_files += sorted(path.relative_to(output).as_posix() for path in (output / "assets").glob("*") if path.is_file())
@@ -850,7 +850,7 @@ def main() -> int:
         print(json.dumps({"status": "ok", "output": str(output), "reportSha256": integrity["reportSha256"]}, ensure_ascii=False))
         return 0
     except (OSError, json.JSONDecodeError, ReportError) as exc:
-        print(f"ReproFig report build failed: {exc}", file=sys.stderr)
+        print(f"SciRepro report build failed: {exc}", file=sys.stderr)
         return 2
 
 

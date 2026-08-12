@@ -78,7 +78,7 @@ report-dir/
 └── assets/
 ```
 
-The `reprofig.report/v2` JSON remains the source of truth. `report-data.js` is a transport copy for offline rendering. Legacy v1 reports must be regenerated; the browser and execution gate do not reinterpret them under the v2 scientific contract.
+The `reprofig.report/v2` JSON remains the source of truth. Its `reprofig.*` prefix is a backward-compatible protocol namespace retained after the product was renamed SciRepro; it is not the current display name. `report-data.js` is a transport copy for offline rendering. New bundles write `window.__SCIREPRO_REPORT__`; the browser also accepts the former `window.__REPROFIG_REPORT__` transport global so existing v2 transport files remain readable. Legacy v1 reports must be regenerated; the browser and execution gate do not reinterpret them under the v2 scientific contract.
 
 ## Pre-delivery checks
 

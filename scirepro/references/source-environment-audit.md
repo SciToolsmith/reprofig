@@ -2,7 +2,7 @@
 
 ## Purpose and timing
 
-Use this audit only after the target figure's scientific meaning, paper-evidence role, generation chain, validation target, and candidate routes are understood. Treat sources and environments as evidence for or constraints on those routes, not as the purpose of ReproFig.
+Use this audit only after the target figure's scientific meaning, paper-evidence role, generation chain, validation target, and candidate routes are understood. Treat sources and environments as evidence for or constraints on those routes, not as the purpose of SciRepro.
 
 Start from candidate-route requirements. Audit relevant sources and local capabilities thoroughly enough to avoid false negatives, but do not inventory unrelated software, hardware, repositories, or datasets. Return every finding to a generation-chain link, route decision, or validation condition.
 

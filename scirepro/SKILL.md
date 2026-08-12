@@ -1,9 +1,9 @@
 ---
-name: reprofig
+name: scirepro
 description: Understand and scientifically reproduce code- or data-generated figures from research papers. Use when Codex receives a paper, DOI, figure image, or figure numbers and must interpret what a target figure shows and how it supports the paper; reconstruct its explicit input-to-figure generation chain; derive evidence-backed reproduction routes from the paper, code, data, and transparent assumptions; audit only the sources, environment, permissions, and resources required by those routes; obtain approval; execute and scientifically validate the selected route; and deliver traceable results, limitations, reusable artifacts, and grounded follow-up research directions. Do not use for pixel tracing, curve fitting to the published image, or simple image extraction; route scientific flowcharts and conceptual schematics to sci-diagram-pptx when available.
 ---
 
-# ReproFig
+# SciRepro
 
 ## Core contract
 
@@ -93,9 +93,9 @@ Use `scripts/inspect_artifact.py` for safe hashes and archive inventory. Follow 
 ### 5. Build the report
 
 - Lead with the scientific question, paper claim, figure interpretation, generation chain, validation targets, and candidate routes. Present source, environment, license, resource, and permission evidence as support for route decisions rather than as the purpose of the report.
-- Write a structured `reprofig-report.json` following [investigation-schema.md](references/investigation-schema.md).
+- Write a structured `scirepro-report.json` following [investigation-schema.md](references/investigation-schema.md).
 - For every image to be bundled, record `redistributionAllowed: true` only after checking its rights. Public bundles accept PNG only (`mediaType: image/png`); place approved PNG assets under one dedicated directory.
-- Run `scripts/build_report.py --input reprofig-report.json --output <report-dir> --asset-root <approved-asset-dir>`.
+- Run `scripts/build_report.py --input scirepro-report.json --output <report-dir> --asset-root <approved-asset-dir>`.
 - Open and inspect the generated `index.html`. If the browser blocks `file://`, serve only the report directory from an ephemeral server bound to `127.0.0.1`, then stop that server after inspection. Verify that every requested figure appears exactly once, scientific interpretation precedes reproduction-readiness details, all source links and local assets resolve, and blocked conditions are visible.
 - Present the report location and stop for approval.
 

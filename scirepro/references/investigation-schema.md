@@ -9,7 +9,7 @@ Use this contract as the single source of truth for the static investigation rep
   "schemaVersion": "reprofig.report/v2",
   "reportId": "rpt-unique-id",
   "generatedAt": "2026-08-11T12:00:00Z",
-  "generator": {"name": "reprofig", "version": "0.1.0"},
+  "generator": {"name": "scirepro", "version": "0.1.0"},
   "workflow": {
     "stage": "awaiting-approval",
     "executionAllowed": false,
@@ -42,7 +42,7 @@ Use this contract as the single source of truth for the static investigation rep
 
 `summary.objective` states the researcher's reproduction objective; it is not a feasibility verdict. `summary.oneLine` is the concise overall assessment and remains secondary in the page header. `summary.overallLevel` is the figure's reproduction level for a one-figure report. Use `mixed` when a multi-figure report contains different levels; otherwise use the common level.
 
-`reprofig.report/v2` introduces structured figure understanding, generation logic, validation targets, scientific route scope, and the `input → method → protocol → validation → environment` readiness order. Legacy `reprofig.report/v1` files must be regenerated with the current Phase 1 workflow before approval; they are rejected rather than silently reinterpreted.
+`reprofig.report/v2` introduces structured figure understanding, generation logic, validation targets, scientific route scope, and the `input → method → protocol → validation → environment` readiness order. The `reprofig.*` prefix is a retained protocol namespace from the product's former ReproFig name; SciRepro keeps it stable so existing v2 reports and approvals remain valid. Legacy `reprofig.report/v1` files must still be regenerated with the current Phase 1 workflow before approval; they are rejected rather than silently reinterpreted.
 
 `paper.sourcePath` is input-only and is always removed from the published report. The builder does not bundle the paper or source archives automatically. Link to their verified public source, or manage a separately approved redistribution step.
 
@@ -69,7 +69,7 @@ Allowed status values:
 
 Every environment also declares a provisioning policy:
 
-- `existing-only`: proprietary software, licensed/institutional systems, special hardware, or another capability ReproFig must not install automatically;
+- `existing-only`: proprietary software, licensed/institutional systems, special hardware, or another capability SciRepro must not install automatically;
 - `isolated-open-source`: an open-source runtime or dependency stack that may be created in a project-local isolated environment after the route declares and receives approval for `install`.
 
 Static MATLAB discovery maps to `status: available` with `provisioning: existing-only`. Only an approved live probe that verifies the route-required runtime, toolboxes/functions, and license may promote it to `verified`.
@@ -331,7 +331,7 @@ Keep `plan` to at most five concise execution steps. It describes the approved w
 
 Route status: `ready`, `conditional`, `blocked`. `ready` means all five referenced requirements are `verified` or `not-required` and execution can begin without first deriving an input, authoring a missing implementation, or accepting a scientific assumption. Use `conditional` when the route is scientifically defensible but still requires a derivation, transparent assumption, new implementation or adapter, environment preparation, or another non-blocking prerequisite. Show blockers on the route card. Do not place shell, MATLAB, or Python commands in route fields.
 
-A `ready` route may reference only environments with status `verified`; detecting an installation as `available` is not enough. An `available` environment keeps a route `conditional` until route-level live verification succeeds. A `conditional` route may reference an `unknown` or `missing` environment only when its provisioning policy is `isolated-open-source` and the route declares the gated `install` effect. An unresolved `existing-only` environment makes the route `blocked` until the user supplies or verifies it outside the installation workflow. ReproFig never downloads proprietary installers, accepts licenses, or turns static product metadata into a runnable claim.
+A `ready` route may reference only environments with status `verified`; detecting an installation as `available` is not enough. An `available` environment keeps a route `conditional` until route-level live verification succeeds. A `conditional` route may reference an `unknown` or `missing` environment only when its provisioning policy is `isolated-open-source` and the route declares the gated `install` effect. An unresolved `existing-only` environment makes the route `blocked` until the user supplies or verifies it outside the installation workflow. SciRepro never downloads proprietary installers, accepts licenses, or turns static product metadata into a runnable claim.
 
 Parameter types: `string`, `number`, `integer`, `boolean`, `enum`, `relative-path`. Parameter and generation origins: `paper`, `code`, `derived`, `assumption`, `user`.
 
