@@ -6,7 +6,7 @@ Use this contract as the single source of truth for the static investigation rep
 
 ```json
 {
-  "schemaVersion": "reprofig.report/v2",
+  "schemaVersion": "reprofig.report/v3",
   "reportId": "rpt-unique-id",
   "generatedAt": "2026-08-11T12:00:00Z",
   "generator": {"name": "scirepro", "version": "0.1.0"},
@@ -20,12 +20,21 @@ Use this contract as the single source of truth for the static investigation rep
     "canonicalization": "json-sort-keys-v1",
     "reportSha256": ""
   },
+  "audience": "local",
+  "targetSet": {
+    "targetSetId": "targets-paper-figures",
+    "manifestSha256": "...",
+    "targetCount": 1,
+    "acquisitionModes": ["paper-with-figure-references"]
+  },
   "paper": {
     "paperId": "paper-id",
     "title": "Paper title",
     "doi": null,
     "citation": "Citation",
-    "sourcePath": "/local/path/to/paper.pdf"
+    "sourcePath": "/local/path/to/paper.pdf",
+    "sourceSha256": "...",
+    "pageCount": 12
   },
   "summary": {
     "objective": "Understand and reproduce the mechanism demonstrated by Fig. 7.",
@@ -40,11 +49,24 @@ Use this contract as the single source of truth for the static investigation rep
 }
 ```
 
-`summary.objective` states the researcher's reproduction objective; it is not a feasibility verdict. `summary.oneLine` is the concise overall assessment and remains secondary in the page header. `summary.overallLevel` is the figure's reproduction level for a one-figure report. Use `mixed` when a multi-figure report contains different levels; otherwise use the common level.
+`summary.objective` states the researcher's reproduction objective; it is not a feasibility verdict. `summary.oneLine` is the concise overall assessment and remains secondary in the page header. `summary.overallLevel` is the target's reproduction level for a one-target report. Use `mixed` when a multi-target report contains different levels; otherwise use the common level. `summary.figureCount` and `targetSet.targetCount` must equal the number of figure objects.
 
-`reprofig.report/v2` introduces structured figure understanding, generation logic, validation targets, scientific route scope, and the `input → method → protocol → validation → environment` readiness order. The `reprofig.*` prefix is a retained protocol namespace from the product's former ReproFig name; SciRepro keeps it stable so existing v2 reports and approvals remain valid. Legacy `reprofig.report/v1` files must still be regenerated with the current Phase 1 workflow before approval; they are rejected rather than silently reinterpreted.
+`reprofig.report/v3` adds a mandatory Phase 0 target set, explicit acquisition and workflow modes, local/public report audiences, and target-bound approval. The `reprofig.*` prefix is retained as a stable protocol namespace from the product's former ReproFig name; it is not the current product name. Reports using `reprofig.report/v1` or `reprofig.report/v2` must be regenerated. The builder and Phase 2 gate reject them rather than silently reinterpreting them under the v3 contract.
 
-`paper.sourcePath` is input-only and is always removed from the published report. The builder does not bundle the paper or source archives automatically. Link to their verified public source, or manage a separately approved redistribution step.
+`audience` is exactly `local` or `public`:
+
+- `local` is the normal investigation report. Every Phase 0 target must be visibly embedded, including a paper figure whose redistribution rights are unknown, because the bundle remains local to the researcher.
+- `public` is a deliberately shareable derivative. A target may be embedded only when `redistributionAllowed` is exactly `true`; otherwise its bytes and private path are omitted and the report records `bundleState: "omitted-rights"`.
+
+`targetSet` binds the report to one Phase 0 manifest. It contains one or more targets and is limited only by the defensive technical maximum of 256—not by a product-level one-to-three rule. `manifestSha256` is the canonical manifest digest. `acquisitionModes` is the unique set of modes present across its targets:
+
+- `paper-with-images`: a paper plus one or more user-supplied target images;
+- `paper-with-figure-references`: a paper plus one or more requested figure numbers or ranges, materialized from the paper by SciRepro;
+- `images-only`: one or more target images without a paper.
+
+Each target also declares one workflow mode. `scientific-reproduction` uses the paper and other evidence to reconstruct and test a scientific generation process. `image-derived-reconstruction` works from visible image evidence only; it may trace geometry, digitize visible values, or fit appearance, but it must not claim to recover the original data, method, or scientific result.
+
+`paper` is nullable only when every target uses `images-only` acquisition and `image-derived-reconstruction`. Any target using `scientific-reproduction` requires a complete paper object. `paper.sourcePath` is input-only and is always removed from the built report. During target binding, the builder overwrites `paper.sourceSha256` and `paper.pageCount` from the verified Phase 0 manifest; the execution gate rechecks both values against that manifest. The builder does not bundle the paper or source archives automatically. Link to their verified public source, or manage a separately approved redistribution step.
 
 ## Environment
 
@@ -108,7 +130,7 @@ Environment evidence belongs in the execution-conditions section and collapsed a
 }
 ```
 
-Source kinds: `paper`, `official-code`, `third-party-code`, `dataset`, `documentation`, `skill`.
+Source kinds: `paper`, `official-code`, `third-party-code`, `dataset`, `documentation`, `skill`, `target-image`.
 
 Access states: `local`, `downloadable`, `login-required`, `request-required`, `controlled`, `unavailable`, `not-found`.
 
@@ -127,10 +149,30 @@ Every figure must separate visible observations, the paper's interpretation, the
   "page": 6,
   "section": "III-A Simulation A",
   "caption": "Original caption",
+  "target": {
+    "targetId": "target-fig-07",
+    "acquisitionMode": "paper-with-figure-references",
+    "workflowMode": "scientific-reproduction",
+    "requestedRef": "Fig. 7",
+    "targetSha256": "...",
+    "materialization": {
+      "method": "pdf-extraction",
+      "qaStatus": "verified",
+      "page": 6,
+      "renderDpi": 300,
+      "captionIncluded": true,
+      "sourceFileName": "paper.pdf",
+      "figureReference": "Fig. 7",
+      "cropBoxPdfPoints": [72.0, 210.0, 540.0, 612.0],
+      "width": 1950,
+      "height": 1675
+    }
+  },
   "image": {
     "sourcePath": "/local/path/to/fig-07.png",
     "sourceRef": "src-paper",
     "redistributionAllowed": true,
+    "bundleState": null,
     "mediaType": "image/png",
     "sha256": "..."
   },
@@ -212,9 +254,21 @@ Every figure must separate visible observations, the paper's interpretation, the
 }
 ```
 
-`redistributionAllowed` must be exactly `true` before `build_report.py` will copy an image. The image must declare `mediaType: "image/png"` and be a non-symlinked PNG inside the approved `--asset-root`, no larger than 25 MiB. The builder emits only allowlisted PNG chunks and replaces `sourcePath` with a generated `assets/...` path. JPEG and SVG are not accepted in public bundles; convert them to PNG in a trusted image editor first, then repeat the rights and content check. If redistribution is not authorized, omit `sourcePath` and set `image.sourceRef` to a declared source with a verified, fragment-free HTTPS URL; the report will link to that source instead of bundling the image.
+`target` is the immutable scientific object selected in Phase 0. It has exactly these fields: `targetId`, `acquisitionMode`, `workflowMode`, nullable `requestedRef`, `targetSha256`, and `materialization`. `targetSha256` binds the normalized Phase 0 PNG and is the digest used by approval. The exact `materialization` fields are:
+
+- `method`: for example `pdf-extraction` or `user-upload`;
+- `qaStatus`: must be `verified` before report construction;
+- nullable `page`, plus `renderDpi`, `captionIncluded`, `sourceFileName`, nullable `figureReference`, nullable `cropBoxPdfPoints`, `width`, and `height`.
+
+Phase 0 preserves the uploaded or extracted original separately from the normalized target and records its own provenance in the target manifest. Do not substitute a later report asset for this target identity.
+
+`image` describes report transport, not target identity. Before building, `sourcePath` points to the verified normalized target. The builder writes a sanitized PNG and records its independent asset digest in `image.sha256`; this value may differ from `target.targetSha256` because sanitization or re-encoding may change the bytes. Never use the bundled asset hash as the approval identity.
+
+For `audience: "local"`, every target must be copied and rendered with `bundleState: "embedded-local"`, irrespective of redistribution permission. For `audience: "public"`, the builder uses `bundleState: "embedded-public"` only when `redistributionAllowed` is exactly `true`; otherwise it removes the path and asset digest, sets `bundleState: "omitted-rights"`, and displays a rights notice. An omitted target cannot be approved from that public bundle. The image must declare `mediaType: "image/png"` and be a non-symlinked PNG inside the approved target workspace, no larger than 25 MiB. The builder emits only allowlisted PNG chunks and replaces private `sourcePath` with generated relative `assets/...` output. JPEG and SVG inputs must first be normalized to PNG during Phase 0.
 
 Keep one stable `figureId` for multi-panel figures. Describe panel-specific observations with `location`; create separate figure objects only when panels have meaningfully different routes or dependencies.
+
+In `scientific-reproduction`, `paperClaim`, `evidenceRole`, and `authorInterpretation` are required non-empty strings and the report root must contain a paper. In `image-derived-reconstruction`, `paperClaim` and `authorInterpretation` must be `null`; `evidenceRole` may be `null` or a narrowly worded visual-reconstruction scope. This prevents an image-only route from inventing paper context.
 
 ### Understanding
 
@@ -237,7 +291,7 @@ Keep steps in causal order from input to plotted output. An origin of `derived` 
 
 Kinds: `qualitative-pattern`, `quantitative`, `comparative`, `structural`, `visual-fidelity`.
 
-Every figure requires at least one validation target. A target must define the observable result, the success criterion, exactly what paper claim the result would or would not support, and whether that criterion comes from the paper, code, a derivation, a transparent assumption, or the user. Pixel similarity alone is not a sufficient scientific criterion unless the route is explicitly an editable or visual reconstruction.
+Every figure requires at least one validation target. A target must define the observable result, the success criterion, exactly what paper claim the result would or would not support, and whether that criterion comes from the paper, code, a derivation, a transparent assumption, or the user. Pixel similarity alone is not a sufficient scientific criterion. It may be used only as a declared visual-fidelity criterion in `image-derived-reconstruction` or an editable reconstruction route, without implying scientific equivalence.
 
 ## Requirement
 
@@ -261,7 +315,7 @@ States: `verified`, `derivable`, `assumable`, `missing`, `not-required`.
 
 `missing` means an essential condition cannot currently be supplied or defensibly inferred. Use `assumable` for a declared, scientifically reasonable choice that changes uncertainty but does not invalidate the route. Render the `blocking` value explicitly.
 
-Figure reproduction levels are `direct-recompute`, `mechanism-reproduction`, `alternative-validation`, `editable-reconstruction`, and `original-case-blocked`. Each figure has exactly one level; candidate routes describe how they serve that level rather than declaring another level.
+Figure reproduction levels are `direct-recompute`, `mechanism-reproduction`, `alternative-validation`, `editable-reconstruction`, `image-derived-reconstruction`, and `original-case-blocked`. Each figure has exactly one level; candidate routes describe how they serve that level rather than declaring another level. Use `image-derived-reconstruction` only when the target's workflow mode has that same value.
 
 ## Route
 
@@ -342,13 +396,15 @@ Effect IDs use a closed registry. Bounded automatic effects are `run-local-code`
 ```json
 {
   "minFigures": 1,
-  "maxFigures": 3,
+  "maxFigures": 1,
   "defaultOutputPolicy": "create-only",
   "allowedEffects": ["run-local-code", "create-workspace-files"],
   "consentRequiredEffects": ["network", "install", "login", "payment", "upload", "overwrite", "gpu", "shared-license", "external-publish"],
   "ttlMinutes": 1440
 }
 ```
+
+`maxFigures` is a report-specific approval bound and must not exceed the number of materialized targets. It is not a product input limit. The report may contain from 1 through the defensive maximum of 256 targets, while a report author may choose a smaller approval batch for operational clarity.
 
 ## Approval draft
 
@@ -382,7 +438,7 @@ Effect IDs use a closed registry. Bounded automatic effects are `run-local-code`
 }
 ```
 
-The approval draft may select only IDs, parameters, deliverables, and effects already declared in the report. The report hash binds the selected route to its scientific scope, validation targets, assumptions, blockers, and execution estimates. Never execute commands or new URLs from an approval file.
+The approval draft may select only IDs, parameters, deliverables, and effects already declared in the report. `selectedFigures[].sourceImageSha256` must equal the selected figure's `target.targetSha256`, not the sanitized report asset's `image.sha256`. The target hash binds approval to the exact normalized Phase 0 reproduction object, while the report hash binds the selected route to its scientific scope, validation targets, assumptions, blockers, and execution estimates. Never execute commands or new URLs from an approval file.
 
 `outputPolicy.mode: "overwrite-approved"` is valid only when every approved overwrite is named in `explicitFiles`, the selected route declares the gated `overwrite` effect, and that effect is separately acknowledged. A `create-only` approval must not select a route that requires overwrite. The bundled static report exports `create-only` approvals only; use a separately reviewed approval workflow when explicit-file overwrite is genuinely required.
 
@@ -390,11 +446,15 @@ The approval draft may select only IDs, parameters, deliverables, and effects al
 
 ## Integrity rules
 
-- Require one to three unique figure IDs.
+- Require 1–256 unique figure and target IDs, with the target count matching `targetSet.targetCount`.
+- Require every target to bind a verified Phase 0 materialization and a valid acquisition/workflow pair.
 - Require a research objective, structured understanding, at least one observation, a non-empty generation chain, and at least one validation target for every figure.
+- Require a complete paper plus non-null paper claim, evidence role, and author interpretation for `scientific-reproduction`. Permit a null root paper only for paperless `images-only` targets, and require null paper claim and author interpretation for `image-derived-reconstruction`.
 - Require every observation, input, generation step, validation target, requirement, environment, and figure evidence reference to resolve to a declared source.
 - Require every scientific-scope observation and validation reference to resolve within the same figure.
 - Require every recommended route to exist and be non-blocked.
 - Require every route effect to be declared by `approvalPolicy`.
 - Remove `integrity.reportSha256` before deterministic JSON hashing, then restore the digest.
-- Rebuild the report if a source artifact, figure image, scientific interpretation, generation step, validation target, route scope, environment, assumption, budget, or reproduction level changes.
+- Require `audience: "local"` bundles to embed every target. Permit `omitted-rights` only in a public bundle and do not allow an omitted target to enter approval.
+- Bind `selectedFigures[].sourceImageSha256` to `target.targetSha256`; validate a bundled asset digest independently when the asset exists.
+- Rebuild the report if the target manifest, target bytes, source artifact, report asset, scientific interpretation, generation step, validation target, route scope, environment, assumption, budget, or reproduction level changes.
