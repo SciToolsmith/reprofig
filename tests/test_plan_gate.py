@@ -118,8 +118,78 @@ class PlanGateTests(unittest.TestCase):
                 "targetSha256": report["figures"][0]["target"]["targetSha256"],
                 "workflowMode": "image-derived-reconstruction",
                 "routeId": "route-local",
+                "parameters": {},
                 "deliverables": ["figure"],
             }])
+
+    def test_gate_result_carries_validated_parameter_values(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, report_path, report = self.make_built_report(root)
+            report["figures"][0]["routes"][0]["parameters"] = [{
+                "parameterId": "seed",
+                "label": "Random seed",
+                "type": "integer",
+                "required": True,
+                "min": 0,
+                "max": 9999,
+                "origin": "user",
+            }]
+            report["integrity"]["reportSha256"] = canonical_report_hash(report)
+            write_json(report_path, report)
+            approval_path = root / "approval.json"
+            approval = self.write_approval(approval_path, report)
+            approval["selectedFigures"][0]["parameters"] = {"seed": 2026}
+            write_json(approval_path, approval)
+
+            completed = self.run_gate(report_path, approval_path, target_manifest)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["selectedTargets"][0]["parameters"], {"seed": 2026})
+
+    def test_gate_rejects_secret_in_parameter_value_without_echoing_it(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, report_path, report = self.make_built_report(root)
+            report["figures"][0]["routes"][0]["parameters"] = [{
+                "parameterId": "method_note",
+                "label": "Method note",
+                "type": "string",
+                "required": True,
+                "origin": "user",
+            }]
+            report["integrity"]["reportSha256"] = canonical_report_hash(report)
+            write_json(report_path, report)
+            approval_path = root / "approval.json"
+            approval = self.write_approval(approval_path, report)
+            approval["selectedFigures"][0]["parameters"] = {"method_note": "Authorization: Basic dXNlcjpwYXNz"}
+            write_json(approval_path, approval)
+
+            completed = self.run_gate(report_path, approval_path, target_manifest)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("possible credential material", completed.stderr)
+            self.assertNotIn("dXNlcjpwYXNz", completed.stderr)
+
+            approval["selectedFigures"][0]["parameters"] = {"method_note": "sk-proj-abcdefghijklmnop"}
+            write_json(approval_path, approval)
+            prefixed = self.run_gate(report_path, approval_path, target_manifest)
+            self.assertNotEqual(prefixed.returncode, 0)
+            self.assertIn("possible credential material", prefixed.stderr)
+            self.assertNotIn("sk-proj-abcdefghijklmnop", prefixed.stderr)
+
+    def test_gate_rejects_route_deliverables_without_file_creation_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, report_path, report = self.make_built_report(root)
+            report["figures"][0]["routes"][0]["effects"].remove("create-workspace-files")
+            report["integrity"]["reportSha256"] = canonical_report_hash(report)
+            write_json(report_path, report)
+            approval_path = root / "approval.json"
+            self.write_approval(approval_path, report)
+
+            completed = self.run_gate(report_path, approval_path, target_manifest)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("deliverables must declare create-workspace-files", completed.stderr)
 
     def test_conditional_route_with_unresolved_requirement_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

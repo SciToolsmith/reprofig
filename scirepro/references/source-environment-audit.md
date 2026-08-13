@@ -18,6 +18,16 @@ For each relevant source, record authority, URL, version/commit, checked date, a
 
 Use `<skill-root>/scripts/inspect_artifact.py` for the initial inventory. Stop once enough evidence exists to accept, reject, or condition the route.
 
+### Formula, parameter, and implementation correspondence
+
+Audit correspondence only for code paths and mathematical dependencies that can change the selected target or its acceptance result. Do not turn figure reproduction into a review of every equation or source file.
+
+- Map each relevant paper expression or parameter to the actual entry point, update rule, default, preprocessing step, and plotted output that implements it.
+- Treat paper values as claims to check. Verify relevant units, dimensions, matrix shapes, indexing, normalization, boundary cases, and admissible ranges before using them.
+- Compare paper text, appendices, cited primary sources, code defaults, examples, and the target figure's axes and trend. Distinguish a documentation mismatch from an algorithmic difference.
+- If the code and paper are materially different, preserve both readings. Create separate routes when each is testable and bind them structurally as `paper-formula` and `code-implementation`; make their scientific scopes distinct. Otherwise block every route affected by the unresolved difference. Never keep a different non-blocked route as an implicit choice under the same divergence finding.
+- Never silently patch an expression, alter a default, select favorable results, or tune toward the published curve. Preserve any correction or compatibility patch as a traceable overlay with its scientific impact.
+
 ## Data identity
 
 Do not accept a dataset by topic or filename alone. Match the paper case using DOI/authors/experiment, variables and units, sample count/rate/duration, channels or specimen/device IDs, split/segment, preprocessing/calibration, version, checksums, license, and restrictions.

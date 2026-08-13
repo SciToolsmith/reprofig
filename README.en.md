@@ -1,3 +1,5 @@
+# SciRepro
+
 <p align="center">
   <picture>
     <source media="(max-width: 640px)" srcset="docs/assets/scirepro-hero-mobile.en.svg">
@@ -36,17 +38,21 @@ Use $scirepro to reconstruct the visible curves, data, and layout in these image
 
 Every path first creates a `targets/` workspace with preserved sources, normalized PNGs, crop QA, and a hash manifest. Targets reliably matched to the paper and verified by QA use `scientific-reproduction`; images-only work uses the explicitly bounded `image-derived-reconstruction` mode.
 
-## One evidence standard, adaptive workflow depth
+## One path, minimum sufficient investigation
 
-SciRepro chooses the smallest workflow that can answer the request. An actual reproduction task always starts with a **local web report that displays the targets**, while a figure explanation is not forced into a maximum-strength audit.
+SciRepro uses one reproduction workflow. It may answer a read-only question about meaning, generation logic, or likely feasibility directly; every request that actually reproduces or produces outputs follows the same path:
 
-| Depth | Use when | Report emphasis |
-|---|---|---|
-| **Explain / assess** | Meaning, generation logic, gaps, or likely feasibility only; no execution | Concise answer; materialize targets only when identity must be stabilized |
-| **Compact report** | One clear local route with known inputs/tools and no restricted action | Executability, frozen assumptions, acceptance criteria |
-| **Full audit** | Code/data/environment research, competing routes, uncertainty, or restricted actions | Evidence, routes, permission, budget, licenses, and risk |
+```text
+verify targets → understand their evidence role → trace the generation chain
+→ form the minimum useful route → investigate decision-changing unknowns
+→ local web report → researcher approval → execution and scientific validation
+```
 
-Shorter workflows do not weaken target identity, claim boundaries, provenance, or validation criteria. Login, payment, large downloads, GPU, overwrite, upload, and publication always require explicit approval.
+Investigation is limited to questions that can change **route feasibility, the scientific claim that can be supported, material resource cost, or required permission**. It stops as soon as one route can test the stated objective at its declared reproduction level with explicit assumptions and acceptance criteria, or all defensible routes are blocked with concrete reasons. SciRepro does not keep searching for background completeness, inventory unrelated environments, or multiply routes that would not change the decision.
+
+Published equations and parameters are primary evidence, not presumed truth. SciRepro independently derives or checks only the parts directly required by the target's generation chain and acceptance criteria, cross-checking definitions, units and dimensions, code, cited sources, and the observable figure. It does not audit unrelated equations across the whole paper, and it records every ambiguity, suspected error, correction, or code–paper discrepancy explicitly.
+
+Login, payment, large downloads, GPU, overwrite, upload, and publication still require explicit approval. Every actual reproduction first produces a **local web decision report displaying all verified targets**.
 
 ## One task, one result directory
 
@@ -67,6 +73,8 @@ scirepro-run-<run-id>/
 ```
 
 The bundle records three separate conclusions: **whether execution completed**, **whether validation passed**, and **whether the paper claim is supported**. “The code ran” therefore cannot silently become “the claim was reproduced.” A complete or partial run combines the pre-execution decision page with actual outcomes in the final local report. Failed, blocked, or cancelled work is not forced to carry an empty result page, but is still finalized as an inspectable diagnostic bundle.
+
+Execution always preserves an **untuned V0 baseline**. By default, SciRepro permits at most one evidence-based scientific correction and one presentation/readability repair, then stops as soon as the acceptance criteria are met; every third or later round requires a new testable scientific hypothesis and explicit round-specific approval. If a valid implementation still does not support the reported claim, SciRepro preserves the negative result instead of chasing pixel similarity, and never treats reproduction failure alone as proof of fabrication.
 
 <details>
 <summary><strong>Modes and rights boundaries</strong></summary>

@@ -2,6 +2,18 @@
 
 Use this contract as the single source of truth for the static investigation report, approval draft, and Phase 2 gate. The schema keeps scientific reasoning explicit while preserving a narrow execution approval boundary. Keep summaries concise and attach evidence at the smallest supported unit.
 
+## Contents
+
+- [Report root](#report-root)
+- [Environment](#environment)
+- [Source](#source)
+- [Figure](#figure)
+- [Requirement](#requirement)
+- [Route](#route)
+- [Approval policy](#approval-policy)
+- [Approval draft](#approval-draft)
+- [Integrity rules](#integrity-rules)
+
 ## Report root
 
 ```json
@@ -289,6 +301,51 @@ Origins for generation inputs and steps: `paper`, `code`, `derived`, `assumption
 
 Keep steps in causal order from input to plotted output. An origin of `derived` means the report can explain the derivation; `assumption` means a scientifically reasonable but unverified choice. Attach evidence references to each input, step, and plot mapping rather than relying only on figure-level sources.
 
+`generationLogic.formulaAudit` is optional and should be present only when a formula, parameter, or theoretical assumption directly controls the target's generation chain or acceptance criteria. It is not a request to review every equation in the paper.
+
+```json
+{
+  "scope": "target-chain-only",
+  "included": ["Eq. (12) update rule", "normalization parameter beta"],
+  "excluded": ["Unrelated convergence proof in Section IV"],
+  "rationale": "These dependencies determine the plotted response and its peak positions.",
+  "items": [
+    {
+      "checkId": "formula-eq12",
+      "label": "Response update",
+      "dependency": "Directly computes the vertical-axis response.",
+      "sourceStatement": "Paper Eq. (12); implementation function update_response.",
+      "checks": ["derivation", "dimensions", "boundary-cases", "code-cross-check", "figure-trend"],
+      "status": "paper-code-divergence",
+      "finding": "The code normalizes before thresholding while the printed equation normalizes afterwards.",
+      "implementationDecision": "split-routes",
+      "routeBindings": [
+        {"routeId": "route-fig12-paper", "interpretation": "paper-formula"},
+        {"routeId": "route-fig12-code", "interpretation": "code-implementation"}
+      ],
+      "evidenceRefs": ["src-paper", "src-official-code"]
+    }
+  ]
+}
+```
+
+Allowed checks are `derivation`, `self-consistency`, `dimensions`, `units`, `boundary-cases`, `matrix-shape`, `code-cross-check`, `source-cross-check`, and `figure-trend`; select only those relevant to the dependency. Status is one of `verified`, `derived`, `ambiguous`, `paper-code-divergence`, `invalid`, or `not-checkable`. Implementation decision is one of `use-as-stated`, `use-derived`, `split-routes`, `freeze-assumption`, or `block`.
+
+Use this status-to-decision mapping:
+
+| Status | Legal decisions |
+| --- | --- |
+| `verified` | `use-as-stated` |
+| `derived` | `use-derived` |
+| `ambiguous` | `freeze-assumption`, `split-routes`, `block` |
+| `paper-code-divergence` | `split-routes`, `block` |
+| `invalid` | `use-derived`, `block` |
+| `not-checkable` | `freeze-assumption`, `block` |
+
+Every non-blocking decision binds its same-figure route through structured `routeBindings` entries shaped as `{"routeId": "...", "interpretation": "..."}`. Interpretations are `paper-formula`, `code-implementation`, `alternative-derived`, `as-stated`, `derived`, and `assumed`; they must agree with the implementation decision. `use-derived` also requires an explicit `derivation` check. `split-routes` binds at least two distinct, existing, scientifically distinct route definitions with distinct interpretations. Any non-empty `paper-code-divergence` binding set must include at least one `paper-formula` route and one different `code-implementation` route; repeated IDs, cloned routes, or IDs from another figure do not count. This is what keeps paper and code interpretations machine-visible instead of silently choosing one.
+
+For `block`, non-empty `routeBindings` may name only routes already marked `blocked`. An empty list means a figure-wide block and is legal only when every candidate route is blocked. A blocked `paper-code-divergence` must cover every candidate route; otherwise express the alternatives with `split-routes`. A derivation or correction is evidence, not a silent rewrite: state its basis, preserve uncertainty, and make any resulting change in claim scope explicit.
+
 ### Validation target
 
 Kinds: `qualitative-pattern`, `quantitative`, `comparative`, `structural`, `visual-fidelity`.
@@ -444,7 +501,7 @@ Effect IDs use a closed registry. Bounded automatic effects are `run-local-code`
 }
 ```
 
-The approval draft may select only IDs, parameters, deliverables, and effects already declared in the report. `selectedFigures[].sourceImageSha256` must equal the selected figure's `target.targetSha256`, not the sanitized report asset's `image.sha256`. The target hash binds approval to the exact normalized Phase 0 reproduction object, while the report hash binds the selected route to its scientific scope, validation targets, assumptions, blockers, and execution estimates. Never execute commands or new URLs from an approval file.
+The approval draft may select only IDs, parameters, deliverables, and effects already declared in the report. `selectedFigures[].sourceImageSha256` must equal the selected figure's `target.targetSha256`, not the sanitized report asset's `image.sha256`. The target hash binds approval to the exact normalized Phase 0 reproduction object, while the report hash binds the selected route to its scientific scope, validation targets, assumptions, blockers, and execution estimates. The approval gate rejects credential-shaped parameter values and copies only validated values into the matching `gate-result.selectedTargets[].parameters`; Phase 2 consumes that record rather than reparsing approval input. Never execute commands or new URLs from an approval file.
 
 `outputPolicy.mode: "overwrite-approved"` is valid only when every approved overwrite is named in `explicitFiles`, the selected route declares the gated `overwrite` effect, and that effect is separately acknowledged. A `create-only` approval must not select a route that requires overwrite. The bundled static report exports `create-only` approvals only; use a separately reviewed approval workflow when explicit-file overwrite is genuinely required.
 
@@ -457,6 +514,7 @@ The approval draft may select only IDs, parameters, deliverables, and effects al
 - Require a research objective, structured understanding, at least one observation, a non-empty generation chain, and at least one validation target for every figure.
 - Require a complete paper plus non-null paper claim, evidence role, and author interpretation for `scientific-reproduction`. Permit a null root paper only for paperless `images-only` targets, and require null paper claim and author interpretation for `image-derived-reconstruction`.
 - Require every observation, input, generation step, validation target, requirement, environment, and figure evidence reference to resolve to a declared source.
+- When `formulaAudit` is present, require `scope: "target-chain-only"`, at least one named dependency and check item, resolved evidence references, a legal status-to-decision pairing, and valid same-figure route bindings. Do not require a formula audit when no expression or parameter directly controls the target.
 - Require every scientific-scope observation and validation reference to resolve within the same figure.
 - Require every recommended route to exist and be non-blocked.
 - Require a recommendation when any non-blocked route exists; permit a null recommendation only when every candidate route is blocked.

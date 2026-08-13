@@ -55,6 +55,55 @@ VALIDATION_KINDS = {
     "structural",
     "visual-fidelity",
 }
+FORMULA_CHECK_TYPES = {
+    "derivation",
+    "self-consistency",
+    "dimensions",
+    "units",
+    "boundary-cases",
+    "matrix-shape",
+    "code-cross-check",
+    "source-cross-check",
+    "figure-trend",
+}
+FORMULA_CHECK_STATUSES = {
+    "verified",
+    "derived",
+    "ambiguous",
+    "paper-code-divergence",
+    "invalid",
+    "not-checkable",
+}
+FORMULA_IMPLEMENTATION_DECISIONS = {
+    "use-as-stated",
+    "use-derived",
+    "split-routes",
+    "freeze-assumption",
+    "block",
+}
+FORMULA_DECISIONS_BY_STATUS = {
+    "verified": {"use-as-stated"},
+    "derived": {"use-derived"},
+    "ambiguous": {"freeze-assumption", "split-routes", "block"},
+    "paper-code-divergence": {"split-routes", "block"},
+    "invalid": {"use-derived", "block"},
+    "not-checkable": {"freeze-assumption", "block"},
+}
+FORMULA_ROUTE_INTERPRETATIONS = {
+    "paper-formula",
+    "code-implementation",
+    "alternative-derived",
+    "as-stated",
+    "derived",
+    "assumed",
+}
+FORMULA_INTERPRETATIONS_BY_DECISION = {
+    "use-as-stated": {"as-stated", "paper-formula"},
+    "use-derived": {"derived", "alternative-derived"},
+    "freeze-assumption": {"assumed", "alternative-derived"},
+    "split-routes": {"paper-formula", "code-implementation", "alternative-derived"},
+    "block": FORMULA_ROUTE_INTERPRETATIONS,
+}
 CANONICAL_AUTOMATIC_EFFECTS = frozenset({"run-local-code", "create-workspace-files"})
 CANONICAL_GATED_EFFECTS = frozenset({
     "network",
@@ -73,7 +122,12 @@ ESTIMATE_FIELDS = frozenset({"downloadBytes", "diskBytes", "runtimeMinutes", "gp
 SAFE_EXTENSIONS = {".png"}
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SCHEME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-SENSITIVE_KEY = re.compile(r"(?i)(?:authorization|cookie|credential|password|private[_-]?key|secret|session|token)")
+SENSITIVE_KEY = re.compile(
+    r"(?i)^(?:authorization|cookie|credentials?|passw(?:or)?d|private[_-]?key|secret|session|token|"
+    r"(?:[a-z0-9]+[_-])?api[_-]?key|access[_-]?key(?:[_-]?id)?|client[_-]?secret|secret[_-]?key|"
+    r"auth[_-]?token|(?:[a-z0-9]+[_-])?access[_-]?token|(?:[a-z0-9]+[_-])?refresh[_-]?token|"
+    r"bearer[_-]?token|session[_-]?token)$"
+)
 SENSITIVE_QUERY_KEY = re.compile(
     r"(?i)^(?:access[_-]?key|api[_-]?key|auth|authorization|credential|password|secret|signature|sig|token|x-amz-.*)$"
 )
@@ -82,6 +136,22 @@ WINDOWS_USER_PATH = re.compile(r"(?i)[A-Z]:[\\/]+Users[\\/]+[^\\/\s\"']+")
 URI_USERINFO = re.compile(r"(?i)(https://)[^/@\s]+@")
 SENSITIVE_QUERY = re.compile(
     r"(?i)([?&](?:access[_-]?key|api[_-]?key|auth|authorization|credential|password|secret|signature|sig|token|x-amz-[^=&#\s]+)=)[^&#\s]+"
+)
+PRIVATE_KEY_BLOCK = re.compile(r"-----BEGIN (?:OPENSSH |RSA |EC |DSA |ENCRYPTED )?PRIVATE KEY-----", re.IGNORECASE)
+# Detect credential material carried inside otherwise ordinary prose or parameter
+# values.  Keep this deliberately assignment/header-shaped so scientific uses of
+# words such as "token", "secret", or "authorization" are not rejected.
+SECRET_ASSIGNMENT = re.compile(
+    r"(?im)(?:^|[\s;,])(?:export\s+)?(?:aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key|"
+    r"access[_-]?key(?:[_-]?id)?|(?:[a-z0-9]+[_-])?api[_-]?key|auth[_-]?token|client[_-]?secret|"
+    r"credential|passw(?:or)?d|private[_-]?key|secret[_-]?key|(?:[a-z0-9]+[_-])?access[_-]?token|"
+    r"(?:[a-z0-9]+[_-])?refresh[_-]?token|bearer[_-]?token|session[_-]?token)"
+    r"\s*[:=]\s*(?:['\"])?(?!\[REDACTED\])[^\s,'\";]+"
+)
+AUTHORIZATION_VALUE = re.compile(r"(?im)\bauthorization\s*:\s*(?:bearer|basic)\s+[A-Za-z0-9+/._~=-]+")
+KNOWN_SECRET_VALUE = re.compile(
+    r"(?i)(?:\bAKIA[0-9A-Z]{16}\b|\bAIza[0-9A-Za-z_-]{20,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|"
+    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b)"
 )
 GENERIC_UNIX_PATH = re.compile(
     r"(?<![:/A-Za-z0-9])/(?:Users|home|Volumes|private|var|srv|opt|etc|mnt|media|root|tmp)(?:/[^\s\"'<>]*)?"
@@ -131,6 +201,27 @@ def non_empty_string(value: object, label: str, *, max_length: int = 20000) -> s
     require(isinstance(value, str) and value.strip(), f"{label} must be a non-empty string")
     require(len(value) <= max_length, f"{label} exceeds {max_length} characters")
     return value
+
+
+def contains_obvious_secret(value: str) -> bool:
+    """Return true only for credential-shaped content, not benign prose."""
+    return bool(
+        PRIVATE_KEY_BLOCK.search(value)
+        or AUTHORIZATION_VALUE.search(value)
+        or SECRET_ASSIGNMENT.search(value)
+        or KNOWN_SECRET_VALUE.search(value)
+    )
+
+
+def require_secret_free(value: object, label: str) -> None:
+    if isinstance(value, str):
+        require(not contains_obvious_secret(value), f"{label} contains possible credential material")
+    elif isinstance(value, dict):
+        for child_key, child in value.items():
+            require_secret_free(child, f"{label}.{child_key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            require_secret_free(child, f"{label}[{index}]")
 
 
 def evidence_refs(value: object, label: str, source_ids: set[str]) -> list[str]:
@@ -243,6 +334,8 @@ def validate_parameter_spec(parameter: dict, route_id: str) -> None:
         finite_number(default, f"{parameter_id}: default")
     elif kind == "enum":
         require(isinstance(default, str) and choices is not None and default in choices, f"{parameter_id}: default is not an enum choice")
+    if isinstance(default, str):
+        require_secret_free(default, f"{parameter_id}: default")
     if kind in {"number", "integer"}:
         if minimum is not None:
             require(default >= minimum, f"{parameter_id}: default is below min")
@@ -306,6 +399,10 @@ def validate_url(value: object, label: str) -> None:
 
 
 def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
+    # Validate this before any portable report bytes are written.  The same
+    # validation runs again at the approval gate, so a hand-edited report
+    # cannot smuggle credentials into approval parameters or gate output.
+    require_secret_free(report, "report")
     allow_keys(report, {
         "schemaVersion", "reportId", "generatedAt", "generator", "workflow", "integrity",
         "audience", "targetSet", "paper", "summary", "environment", "sources", "figures", "approvalPolicy",
@@ -607,9 +704,13 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
             refs = evidence_refs(observation.get("evidenceRefs"), f"{observation_id} evidenceRefs", source_ids)
             require(bool(refs), f"{observation_id}: at least one evidence reference is required")
 
-        generation_fields = {"inputs", "steps", "plotMapping", "unknowns"}
+        generation_fields = {"inputs", "steps", "plotMapping", "unknowns", "formulaAudit"}
+        required_generation_fields = generation_fields - {"formulaAudit"}
         generation = allow_keys(figure.get("generationLogic", {}), generation_fields, f"{figure_id} generationLogic")
-        require(set(generation) == generation_fields, f"{figure_id}: generationLogic must declare {sorted(generation_fields)}")
+        require(
+            required_generation_fields <= set(generation),
+            f"{figure_id}: generationLogic must declare {sorted(required_generation_fields)}",
+        )
         generation_inputs = generation.get("inputs")
         require(isinstance(generation_inputs, list) and 1 <= len(generation_inputs) <= 32, f"{figure_id}: 1-32 generation inputs are required")
         input_ids = unique_ids(generation_inputs, "inputId", f"{figure_id} generation input")
@@ -647,6 +748,82 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
         refs = evidence_refs(plot_mapping.get("evidenceRefs"), f"{figure_id} plotMapping evidenceRefs", source_ids)
         require(bool(refs), f"{figure_id}: plotMapping requires at least one evidence reference")
         string_list(generation.get("unknowns"), f"{figure_id} generation unknowns", max_items=32)
+
+        formula_audit = generation.get("formulaAudit")
+        formula_route_bindings: list[tuple[str, str, str, list[dict[str, str]]]] = []
+        if formula_audit is not None:
+            audit_fields = {"scope", "included", "excluded", "rationale", "items"}
+            audit = allow_keys(formula_audit, audit_fields, f"{figure_id} formulaAudit")
+            require(set(audit) == audit_fields, f"{figure_id}: formulaAudit fields are incomplete")
+            require(
+                audit.get("scope") == "target-chain-only",
+                f"{figure_id}: formulaAudit scope must be target-chain-only",
+            )
+            included = string_list(audit.get("included"), f"{figure_id} formulaAudit included", max_items=32)
+            string_list(audit.get("excluded"), f"{figure_id} formulaAudit excluded", max_items=32)
+            require(bool(included), f"{figure_id}: formulaAudit must name at least one relevant dependency")
+            non_empty_string(audit.get("rationale"), f"{figure_id} formulaAudit rationale")
+            items = audit.get("items")
+            require(isinstance(items, list) and 1 <= len(items) <= 32, f"{figure_id}: formulaAudit requires 1-32 items")
+            unique_ids(items, "checkId", f"{figure_id} formula check")
+            item_fields = {
+                "checkId", "label", "dependency", "sourceStatement", "checks", "status", "finding",
+                "implementationDecision", "routeBindings", "evidenceRefs",
+            }
+            for item in items:
+                check_id = item["checkId"]
+                allow_keys(item, item_fields, f"formula check {check_id}")
+                require(set(item) == item_fields, f"{check_id}: formula check fields are incomplete")
+                for field in ("label", "dependency", "sourceStatement", "finding"):
+                    non_empty_string(item.get(field), f"{check_id} {field}")
+                checks = set(string_list(item.get("checks"), f"{check_id} checks", ids=True, max_items=16))
+                require(bool(checks), f"{check_id}: at least one check is required")
+                require(checks <= FORMULA_CHECK_TYPES, f"{check_id}: unsupported formula check type")
+                status = item.get("status")
+                decision = item.get("implementationDecision")
+                require(status in FORMULA_CHECK_STATUSES, f"{check_id}: invalid formula check status")
+                require(decision in FORMULA_IMPLEMENTATION_DECISIONS, f"{check_id}: invalid implementation decision")
+                require(
+                    decision in FORMULA_DECISIONS_BY_STATUS[status],
+                    f"{check_id}: {status} cannot use implementation decision {decision}",
+                )
+                if decision == "use-derived":
+                    require(
+                        "derivation" in checks,
+                        f"{check_id}: use-derived requires an explicit derivation check",
+                    )
+                route_bindings = item.get("routeBindings")
+                require(isinstance(route_bindings, list) and len(route_bindings) <= 16, f"{check_id} routeBindings must be a list")
+                for binding in route_bindings:
+                    allow_keys(binding, {"routeId", "interpretation"}, f"{check_id} route binding")
+                    require(set(binding) == {"routeId", "interpretation"}, f"{check_id}: route binding fields are incomplete")
+                    require(
+                        isinstance(binding.get("routeId"), str) and ID_PATTERN.fullmatch(binding["routeId"]) is not None,
+                        f"{check_id}: route binding contains an invalid routeId",
+                    )
+                    require(
+                        binding.get("interpretation") in FORMULA_ROUTE_INTERPRETATIONS,
+                        f"{check_id}: route binding has an invalid interpretation",
+                    )
+                    require(
+                        binding["interpretation"] in FORMULA_INTERPRETATIONS_BY_DECISION[decision],
+                        f"{check_id}: interpretation {binding['interpretation']} is incompatible with {decision}",
+                    )
+                route_refs = [binding["routeId"] for binding in route_bindings]
+                require(len(route_refs) == len(set(route_refs)), f"{check_id}: routeBindings must not repeat a routeId")
+                if decision == "split-routes":
+                    require(
+                        len(route_refs) >= 2,
+                        f"{check_id}: split-routes requires at least two distinct bound routes",
+                    )
+                elif decision != "block":
+                    require(
+                        len(route_refs) == 1,
+                        f"{check_id}: {decision} must bind exactly one route interpretation",
+                    )
+                formula_route_bindings.append((check_id, status, decision, route_bindings))
+                refs = evidence_refs(item.get("evidenceRefs"), f"{check_id} evidenceRefs", source_ids)
+                require(bool(refs), f"{check_id}: at least one evidence reference is required")
 
         validation_targets = figure.get("validationTargets")
         require(isinstance(validation_targets, list) and 1 <= len(validation_targets) <= 32, f"{figure_id}: 1-32 validation targets are required")
@@ -738,6 +915,7 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
         routes = figure.get("routes", [])
         require(isinstance(routes, list) and 1 <= len(routes) <= 16, f"{figure_id}: 1-16 routes are required")
         route_ids = unique_ids(routes, "routeId", f"{figure_id} route")
+        routes_by_id = {route["routeId"]: route for route in routes}
         require(not (route_ids_global & route_ids), "route IDs must be unique across the report")
         route_ids_global |= route_ids
         recommended = reproduction.get("recommendedRouteId")
@@ -860,6 +1038,11 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
                 require(extension.startswith(".") and "/" not in extension and "\\" not in extension, f"{route_id}: unsafe deliverable extension")
                 non_empty_string(deliverable.get("label"), f"{route_id} deliverable label", max_length=1024)
             require(len(deliverable_kinds) == len(set(deliverable_kinds)), f"{route_id}: duplicate deliverable kind")
+            if route["status"] != "blocked" and deliverables:
+                require(
+                    "create-workspace-files" in effects,
+                    f"{route_id}: a route with deliverables must declare create-workspace-files",
+                )
 
             parameters = route.get("parameters")
             require(isinstance(parameters, list), f"{route_id}: parameters must be a list")
@@ -877,6 +1060,64 @@ def validate_report(report: dict, *, allow_built_assets: bool = False) -> None:
                     estimate_is_bounded(route["estimated"]),
                     f"{route_id}: an executable route requires finite resource estimates before approval",
                 )
+
+        for check_id, formula_status, decision, route_bindings in formula_route_bindings:
+            route_refs = [binding["routeId"] for binding in route_bindings]
+            require(
+                set(route_refs) <= route_ids,
+                f"{check_id}: formula routeBindings must resolve to routes in the same figure",
+            )
+            interpretations = {binding["interpretation"] for binding in route_bindings}
+            if formula_status == "paper-code-divergence" and route_bindings:
+                require(
+                    {"paper-formula", "code-implementation"} <= interpretations,
+                    f"{check_id}: paper/code divergence requires paper-formula and code-implementation bindings",
+                )
+            if decision == "split-routes":
+                require(
+                    len(interpretations) >= 2,
+                    f"{check_id}: split-routes requires distinct route interpretations",
+                )
+                bound_routes = [routes_by_id[route_id] for route_id in route_refs]
+                route_signatures = {
+                    json.dumps(
+                        {
+                            "scientificScope": {
+                                key: value
+                                for key, value in route["scientificScope"].items()
+                                if key != "recommendationRationale"
+                            },
+                            "engine": route["engine"],
+                            "plan": route["plan"],
+                            "requirementIds": route["requirementIds"],
+                            "parameters": route["parameters"],
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    for route in bound_routes
+                }
+                require(
+                    len(route_signatures) >= 2,
+                    f"{check_id}: split-routes must bind scientifically distinct route definitions",
+                )
+            elif decision == "block":
+                if route_refs:
+                    require(
+                        all(routes_by_id[route_id]["status"] == "blocked" for route_id in route_refs),
+                        f"{check_id}: block may bind only blocked routes",
+                    )
+                else:
+                    require(
+                        all(route["status"] == "blocked" for route in routes),
+                        f"{check_id}: an unbound block requires every figure route to be blocked",
+                    )
+                if formula_status == "paper-code-divergence":
+                    require(
+                        set(route_refs) == route_ids or (not route_refs and all(route["status"] == "blocked" for route in routes)),
+                        f"{check_id}: blocking a paper/code divergence must cover every candidate route",
+                    )
 
         if recommended is None:
             require(

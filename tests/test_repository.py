@@ -28,6 +28,9 @@ class RepositoryContractTests(unittest.TestCase):
         app = SKILL / "assets" / "research-report-web" / "app.js"
         completed = subprocess.run([node, "--check", str(app)], cwd=REPO, text=True, capture_output=True)
         self.assertEqual(completed.returncode, 0, completed.stderr)
+        source = app.read_text(encoding="utf-8")
+        self.assertNotIn("findRoute(", source)
+        self.assertIn("routeFor(figure, binding.routeId)", source)
 
     def test_skill_frontmatter_and_routed_references(self) -> None:
         text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
@@ -49,6 +52,34 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertIn(reference, text, "SKILL.md must route to " + reference)
             self.assertTrue((SKILL / "references" / reference).is_file())
 
+    def test_skill_uses_one_minimum_sufficient_workflow(self) -> None:
+        skill_text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("## Unified workflow and stopping rule", skill_text)
+        self.assertIn("minimum sufficient investigation", skill_text)
+        self.assertIn("candidate specifications, not automatically correct facts", skill_text)
+        self.assertIn("Do not derive or audit unrelated formulas", skill_text)
+        self.assertIn("build the local target-displaying report", skill_text)
+
+        governed_files = (
+            REPO / "README.md",
+            REPO / "README.en.md",
+            SKILL / "SKILL.md",
+            SKILL / "agents" / "openai.yaml",
+            SKILL / "references" / "permission-gates.md",
+            SKILL / "references" / "report-scaffold.md",
+        )
+        governed_text = "\n".join(path.read_text(encoding="utf-8") for path in governed_files)
+        for retired_term in (
+            "**简析**",
+            "**轻量报告**",
+            "**完整审计**",
+            "adaptive workflow depth",
+            "**Compact local report**",
+            "**Full audited report**",
+            "choose the smallest sufficient assessment depth",
+        ):
+            self.assertNotIn(retired_term, governed_text)
+
     def test_generated_cache_files_are_not_tracked(self) -> None:
         completed = subprocess.run(
             ["git", "ls-files"], cwd=REPO, text=True, capture_output=True, check=True,
@@ -58,6 +89,20 @@ class RepositoryContractTests(unittest.TestCase):
             if path.endswith((".pyc", ".pyo", ".DS_Store")) or "/__pycache__/" in f"/{path}/"
         ]
         self.assertEqual(forbidden, [], "generated cache files must not be tracked")
+
+    def test_negative_reproduction_and_integrity_language_is_bounded(self) -> None:
+        execution = (SKILL / "references" / "execution-validation.md").read_text(encoding="utf-8")
+        for claim_status in (
+            "`supported`",
+            "`partially-supported`",
+            "`unsupported`",
+            "`inconclusive`",
+            "`not-tested`",
+        ):
+            self.assertIn(claim_status, execution)
+        self.assertIn("Failure to reproduce is not by itself evidence of fabrication", execution)
+        self.assertIn("potential research-integrity concern", execution)
+        self.assertIn("requires explicit user authorization", execution)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ import errno
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import shutil
@@ -27,20 +28,25 @@ from pathlib import Path, PurePosixPath
 
 from build_report import ReportError as PhaseOneReportError
 from build_report import canonical_payload as canonical_report_payload
+from build_report import require_secret_free
 from build_report import validate_report as validate_phase_one_report
 from materialize_target_figures import TargetError as PhaseZeroTargetError
 from materialize_target_figures import validate_manifest as validate_phase_zero_manifest
 
 
-BUNDLE_SCHEMA = "scirepro.run-bundle/v1"
-STAGING_SCHEMA = "scirepro.run-bundle-staging/v1"
-TARGET_RESULT_SCHEMA = "scirepro.target-result/v1"
-VALIDATION_SCHEMA = "scirepro.validation-summary/v1"
+BUNDLE_SCHEMA = "scirepro.run-bundle/v2"
+STAGING_SCHEMA = "scirepro.run-bundle-staging/v2"
+TARGET_RESULT_SCHEMA = "scirepro.target-result/v2"
+VALIDATION_SCHEMA = "scirepro.validation-summary/v2"
 SOURCES_SCHEMA = "scirepro.sources/v1"
 ENVIRONMENT_SCHEMA = "scirepro.environment/v1"
 RESOURCE_SCHEMA = "scirepro.resource-usage/v1"
 OMISSIONS_SCHEMA = "scirepro.omissions/v1"
-RESULT_REPORT_SCHEMA = "scirepro.result-report/v1"
+RESULT_REPORT_SCHEMA = "scirepro.result-report/v2"
+ADJUSTMENTS_SCHEMA = "scirepro.adjustments/v2"
+DIFFERENCE_SUMMARY_SCHEMA = "scirepro.difference-summary/v2"
+VISUAL_QUALITY_SCHEMA = "scirepro.visual-quality-check/v2"
+CALIBRATION_APPROVAL_SCHEMA = "scirepro.calibration-approval/v2"
 
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 RUN_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -118,6 +124,25 @@ DECISION_REPORT_REQUIRED = {
     "index.html", "app.js", "styles.css", "report-data.js", "report.json", "manifest.json",
 }
 RESULT_IMAGE_SUFFIXES = {".jpeg", ".jpg", ".png", ".svg", ".webp"}
+FIGURE_ARTIFACT_SUFFIXES = RESULT_IMAGE_SUFFIXES
+SCIENTIFIC_CHANGE_DOMAINS = {
+    "input", "data", "formula", "preprocessing", "algorithm", "parameter",
+    "randomization", "numerical", "axis-scale", "unit-conversion", "range-selection",
+}
+PRESENTATION_CHANGE_DOMAINS = {
+    "axis-label", "tick-format", "palette", "line-style", "marker-style", "legend",
+    "typography", "layout", "export", "overlap", "contrast", "readability",
+}
+COMPARISON_MODES = {"side-by-side", "metrics-only"}
+DIRECT_MISCONDUCT_ALLEGATION = re.compile(
+    r"(?i)(?:"
+    r"(?:authors?|researchers?|paper|study)\s+(?:have\s+|has\s+|committed\s+)?"
+    r"(?:fabricated|falsified|manipulated|committed\s+(?:fraud|misconduct))"
+    r"|(?:proves?|demonstrates?|confirms?|establishes?)\s+(?:research\s+)?(?:fraud|misconduct|fabrication|falsification)"
+    r"|(?:作者|研究者|论文|研究)\s*(?:存在|涉嫌|已经|被证实|有)?\s*(?:造假|伪造|篡改|学术不端)"
+    r"|(?:证明|证实|确认|表明)\s*(?:了|存在|作者|研究者|论文|研究)?\s*(?:造假|伪造|篡改|学术不端)"
+    r")"
+)
 
 
 class BundleError(ValueError):
@@ -242,6 +267,48 @@ def checked_existing_directory(raw: Path, purpose: str) -> Path:
     return absolute.resolve(strict=True)
 
 
+def approved_descendant_directory(
+    workspace: Path,
+    relative: str,
+    purpose: str,
+    *,
+    create: bool,
+) -> Path:
+    """Resolve/create an approval-bound directory without following symlinks.
+
+    ``relative`` has already passed ``safe_relative``.  Every existing
+    component below the trusted, resolved workspace is inspected with lstat.
+    Creation is one component at a time and each new component is checked
+    before it becomes the parent of the next one.
+    """
+    current = workspace
+    missing_parent = False
+    for part in PurePosixPath(relative).parts:
+        candidate = current / part
+        if missing_parent and not create:
+            current = candidate
+            continue
+        try:
+            mode = candidate.lstat().st_mode
+        except FileNotFoundError:
+            if not create:
+                missing_parent = True
+                current = candidate
+                continue
+            try:
+                candidate.mkdir()
+            except FileExistsError:
+                pass
+            try:
+                mode = candidate.lstat().st_mode
+            except FileNotFoundError as exc:
+                raise BundleError(f"{purpose} disappeared during creation: {candidate}") from exc
+        require(not stat.S_ISLNK(mode), f"{purpose} contains a symlinked component: {candidate}")
+        require(stat.S_ISDIR(mode), f"{purpose} component is not a directory: {candidate}")
+        current = candidate
+    return current
+
+
 def checked_regular_file(raw: Path, purpose: str) -> Path:
     expanded = raw.expanduser()
     absolute = expanded if expanded.is_absolute() else Path.cwd() / expanded
@@ -347,6 +414,45 @@ def canonical_hash(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def approval_decision_payload(report: dict) -> dict:
+    """Return the audience-neutral part of a Phase 1 decision report.
+
+    Execution approval binds the exact local report.  A shareable run bundle,
+    however, must contain a separately built public report whose target pixels
+    may be omitted.  The builder changes only the fields normalized here when
+    switching audiences; every scientific statement, route, parameter,
+    assumption, cost, permission, and target binding remains covered.
+    """
+    clone = json.loads(json.dumps(report))
+    clone.pop("audience", None)
+    integrity = clone.get("integrity")
+    if isinstance(integrity, dict):
+        integrity["reportSha256"] = ""
+    for figure in clone.get("figures", []):
+        if not isinstance(figure, dict):
+            continue
+        target = figure.get("target")
+        if isinstance(target, dict):
+            materialization = target.get("materialization")
+            target["requestedRef"] = (
+                materialization.get("figureReference") if isinstance(materialization, dict) else None
+            ) or target.get("targetId")
+            if isinstance(materialization, dict):
+                materialization["sourceFileName"] = None
+        image = figure.get("image")
+        if isinstance(image, dict):
+            for field in (
+                "bundleState", "relativePath", "sizeBytes", "sha256",
+                "metadataStripped", "displayProxy",
+            ):
+                image.pop(field, None)
+    return clone
+
+
+def approval_decision_hash(report: dict) -> str:
+    return canonical_hash(approval_decision_payload(report))
+
+
 def canonical_embedded_hash(value: dict, container: str, field: str) -> str:
     clone = json.loads(json.dumps(value))
     require(isinstance(clone.get(container), dict), f"{container} must be an object")
@@ -365,6 +471,7 @@ def validate_built_decision_report(
     *,
     expected_report_sha256: str | None,
     distribution_class: str,
+    approved_report: dict | None = None,
 ) -> dict:
     """Validate an immutable Phase 1 web bundle before it enters a run report."""
     files, _ = scan_tree(root)
@@ -398,13 +505,31 @@ def validate_built_decision_report(
     require(report.get("integrity", {}).get("reportSha256") == report_hash, "decision-report integrity hash mismatch")
     require(bundle_manifest.get("reportId") == report.get("reportId"), "decision-report ID mismatch")
     require(bundle_manifest.get("reportSha256") == report_hash, "decision-report manifest hash mismatch")
-    if expected_report_sha256 is not None:
-        require(report_hash == expected_report_sha256, "result-report source is not the approved Phase 1 report")
     expected_audience = "local" if distribution_class == "local-private" else "public"
     require(
         report.get("audience") == expected_audience and bundle_manifest.get("audience") == expected_audience,
         f"{distribution_class} result bundle requires a {expected_audience} decision report",
     )
+    if expected_report_sha256 is not None:
+        if distribution_class == "local-private":
+            require(report_hash == expected_report_sha256, "result-report source is not the approved Phase 1 report")
+        else:
+            require(approved_report is not None, "shareable result report requires the archived approved local report")
+            try:
+                validate_phase_one_report(approved_report, allow_built_assets=True)
+            except PhaseOneReportError as exc:
+                raise BundleError(f"invalid archived approved report: {exc}") from exc
+            approved_hash = hashlib.sha256(canonical_report_payload(approved_report)).hexdigest()
+            require(
+                approved_report.get("audience") == "local"
+                and approved_report.get("integrity", {}).get("reportSha256") == approved_hash
+                and approved_hash == expected_report_sha256,
+                "shareable result report is not derived from the exact approved local report",
+            )
+            require(
+                approval_decision_hash(report) == approval_decision_hash(approved_report),
+                "shareable result report decision content differs from the approved local report",
+            )
     return report
 
 
@@ -415,11 +540,21 @@ def make_result_report_summary(
     status: str,
     finalized_at: str,
     report_sha256: str | None,
+    distribution_class: str,
 ) -> dict:
     targets = []
-    for record in target_records(root):
+    for record in target_records(root, distribution_class=distribution_class):
         result = read_object(root / record["resultPath"], f"{record['targetId']} result")
         validation = read_object(root / record["validationPath"], f"{record['targetId']} validation")
+        calibration = result.get("calibration")
+        calibration_details = None
+        if isinstance(calibration, dict):
+            calibration_details = {
+                "comparisons": calibration["comparisons"],
+                "difference": read_object(root / calibration["differenceSummary"], "difference summary"),
+                "visualQuality": read_object(root / calibration["visualQualityCheck"], "visual quality check"),
+                "adjustments": read_object(root / calibration["adjustments"], "adjustments"),
+            }
         reference = f"targets/{record['targetId']}/reference/target.png"
         targets.append(
             {
@@ -435,6 +570,8 @@ def make_result_report_summary(
                 "reference": reference if (root / reference).is_file() else None,
                 "outputs": result["outputs"],
                 "validationArtifacts": validation.get("artifacts", []),
+                "calibration": calibration,
+                "calibrationDetails": calibration_details,
             }
         )
     return {
@@ -460,6 +597,11 @@ def decision_report_hash(root: Path, plan_bindings: dict) -> str | None:
     return None
 
 
+def archived_approved_report(root: Path) -> dict | None:
+    path = root / PLAN_INPUTS["report"]
+    return read_object(path, "archived approved report") if path.is_file() else None
+
+
 def result_report_html(summary: dict) -> bytes:
     summary_hash = hashlib.sha256(pretty_json_bytes(summary)).hexdigest()
     cards = []
@@ -467,26 +609,91 @@ def result_report_html(summary: dict) -> bytes:
         target_id = html.escape(target["targetId"])
         status = html.escape(target["operationalStatus"])
         media = []
+        rendered_media: set[str] = set()
+
+        def add_media(relative: str, label: str, alt: str) -> None:
+            if relative in rendered_media or PurePosixPath(relative).suffix.lower() not in RESULT_IMAGE_SUFFIXES:
+                return
+            rendered_media.add(relative)
+            href = "../" + relative
+            media.append(
+                f'<figure><a href="{html.escape(href, quote=True)}"><img src="{html.escape(href, quote=True)}" '
+                f'alt="{html.escape(alt, quote=True)}"></a><figcaption>{html.escape(label)}</figcaption></figure>'
+            )
+
         reference = target.get("reference")
         if reference:
-            source = "../" + reference
-            media.append(
-                f'<figure><img src="{html.escape(source, quote=True)}" alt="Target {target_id}">'
-                '<figcaption>Published target / 目标图</figcaption></figure>'
+            add_media(reference, "Published target / 目标图", f"Published target {target_id}")
+        calibration = target.get("calibration") or {}
+        version_roles = (
+            (calibration.get("baselineV0"), "V0 · untuned baseline / 未调参基线"),
+            (calibration.get("scientificV1"), "V1 · scientific correction / 科学修正"),
+            (calibration.get("presentationV2"), "V2 · presentation quality / 表达与质量修正"),
+        )
+        for relative, label in version_roles:
+            if isinstance(relative, str):
+                add_media(relative, label, label)
+        details = target.get("calibrationDetails") or {}
+        for comparison in details.get("comparisons", []):
+            mode_label = "side-by-side / 并排" if comparison["mode"] == "side-by-side" else "metrics-only / 仅指标"
+            add_media(
+                comparison["artifact"],
+                f'{comparison["comparisonId"]} · {mode_label}',
+                f'{comparison["comparisonId"]} comparison',
             )
         for relative in target.get("outputs", []):
-            href = "../" + relative
-            label = html.escape(PurePosixPath(relative).name)
-            if PurePosixPath(relative).suffix.lower() in RESULT_IMAGE_SUFFIXES:
-                media.append(
-                    f'<figure><a href="{html.escape(href, quote=True)}"><img src="{html.escape(href, quote=True)}" '
-                    f'alt="Output {label}"></a><figcaption>{label}</figcaption></figure>'
-                )
+            label = PurePosixPath(relative).name
+            if re.fullmatch(r"calibrated-v(?:[3-9]|[1-9][0-9]+)", PurePosixPath(relative).stem):
+                label += " · approved scientific hypothesis / 已批准科学假设"
+            else:
+                label += " · generated artifact / 生成成果"
+            add_media(relative, label, label)
+        for relative in target.get("validationArtifacts", []):
+            add_media(relative, f"{PurePosixPath(relative).name} · validation artifact / 验证成果", relative)
         artifacts = []
         for relative in target.get("outputs", []) + target.get("validationArtifacts", []):
             href = "../" + relative
             artifacts.append(f'<li><a href="{html.escape(href, quote=True)}">{html.escape(relative)}</a></li>')
         artifact_html = "<ul>" + "".join(dict.fromkeys(artifacts)) + "</ul>" if artifacts else "<p>None recorded.</p>"
+        selected_output = calibration.get("selectedOutput")
+        calibration_html = ""
+        if isinstance(selected_output, str) and details:
+            difference = details["difference"]
+            quality = details["visualQuality"]
+            adjustments = details["adjustments"]
+            dimension_labels = {
+                "axesUnitsScale": "Axes, units, scale / 坐标轴、单位、尺度",
+                "trendsPeaksMagnitude": "Trends, peaks, magnitude / 趋势、峰值、量级",
+                "colorsLinesLegends": "Colors, lines, legends / 配色、线型、图例",
+                "layoutTypography": "Layout, typography / 布局、文字",
+            }
+            dimension_html = "".join(
+                f'<li><strong>{html.escape(dimension_labels[key])}:</strong> {html.escape(difference["dimensions"][key])}</li>'
+                for key in dimension_labels
+            )
+            issues = quality["issuesRemaining"]
+            issues_html = "".join(f"<li>{html.escape(item)}</li>" for item in issues) or "<li>None / 无</li>"
+            round_rows = []
+            for record in adjustments["rounds"]:
+                changes = "; ".join(
+                    f'{change["changeDomain"]}: {change["subject"]}' for change in record["changes"]
+                )
+                round_rows.append(
+                    f'<tr><td>V{record["round"]}</td><td>{html.escape(record["kind"])}</td>'
+                    f'<td>{html.escape(changes)}</td><td>{html.escape(record["rationale"])}</td></tr>'
+                )
+            rounds_html = (
+                '<table><thead><tr><th>Round</th><th>Type</th><th>Changes</th><th>Rationale</th></tr></thead>'
+                f'<tbody>{"".join(round_rows)}</tbody></table>'
+                if round_rows else '<p>No adjustment round was needed / 无需调整轮次。</p>'
+            )
+            calibration_html = f'''
+<section class="calibration"><h3>Comparison and bounded calibration / 对比与有界校准</h3>
+<p><strong>Selected figure / 选定图件:</strong> {html.escape(selected_output)}</p>
+<p class="conclusion"><strong>Scientific conclusion / 科学结论:</strong> {html.escape(difference["scientificConclusion"])}</p>
+<ul>{dimension_html}</ul>
+<div class="quality"><strong>Visual QA / 视觉质检:</strong> {html.escape(quality["status"])}<ul>{issues_html}</ul></div>
+{rounds_html}<p><strong>Stop reason / 停止原因:</strong> {html.escape(adjustments["stopReason"])}</p></section>'''
         cards.append(
             f'''<article class="target-card">
 <header><div><p class="eyebrow">Target</p><h2>{target_id}</h2></div><span class="status">{status}</span></header>
@@ -494,7 +701,7 @@ def result_report_html(summary: dict) -> bytes:
 <div><dt>Claim</dt><dd>{html.escape(target["claimStatus"])}</dd></div>
 <div><dt>Mode</dt><dd>{html.escape(target["workflowMode"])}</dd></div></dl>
 <p>{html.escape(target["summary"])}</p><p class="validation">{html.escape(target["validationSummary"])}</p>
-<div class="media">{"".join(media)}</div><h3>Artifacts / 成果文件</h3>{artifact_html}
+<div class="media">{"".join(media)}</div>{calibration_html}<h3>Artifacts / 成果文件</h3>{artifact_html}
 </article>'''
         )
     document = f'''<!doctype html>
@@ -508,7 +715,7 @@ main{{width:min(1100px,calc(100% - 32px));margin:36px auto 72px}}.hero{{backgrou
 .target-card{{margin-top:18px;background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:0 8px 24px #26334d0d}}
 .target-card header{{display:flex;justify-content:space-between;gap:16px;align-items:start}}h2{{margin:.15rem 0 0}}.status{{padding:5px 10px;border-radius:999px;background:#e9f2ff;color:#0757c6;font-weight:700}}
 dl{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:20px 0}}dl div{{background:var(--wash);border-radius:10px;padding:10px}}dt{{color:var(--muted);font-size:12px}}dd{{margin:0;font-weight:650;overflow-wrap:anywhere}}
-.validation{{border-left:3px solid var(--accent);padding-left:12px;color:#334155}}.media{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}}figure{{margin:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}}figure img{{display:block;width:100%;max-height:420px;object-fit:contain;background:#f8fafc}}figcaption{{padding:8px 10px;color:var(--muted)}}a{{color:#0757c6}}@media(max-width:650px){{main{{width:min(100% - 20px,1100px);margin-top:10px}}.hero,.target-card{{border-radius:12px;padding:18px}}dl{{grid-template-columns:1fr}}}}
+.validation{{border-left:3px solid var(--accent);padding-left:12px;color:#334155}}.media{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:18px 0}}figure{{margin:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}}figure img{{display:block;width:100%;max-height:420px;object-fit:contain;background:#f8fafc}}figcaption{{padding:8px 10px;color:var(--muted)}}.calibration{{margin:20px 0;padding:18px;border-radius:12px;background:#f8fafc;border:1px solid var(--line)}}.conclusion{{border-left:3px solid #14804a;padding-left:12px}}table{{width:100%;border-collapse:collapse;margin:12px 0}}th,td{{padding:8px;border:1px solid var(--line);text-align:left;vertical-align:top}}a{{color:#0757c6}}@media(max-width:650px){{main{{width:min(100% - 20px,1100px);margin-top:10px}}.hero,.target-card{{border-radius:12px;padding:18px}}dl{{grid-template-columns:1fr}}table{{display:block;overflow-x:auto}}}}
 </style></head><body><main><section class="hero"><p class="eyebrow">SciRepro · Phase 2</p><h1>复现结果 / Run result</h1>
 <p><strong>{html.escape(summary["bundleId"])}</strong> · {html.escape(summary["status"])}</p>
 <p>执行、验收与论文主张分别记录。<a href="decision/index.html">查看执行前研判报告 / Open decision report</a></p></section>
@@ -533,6 +740,7 @@ def validate_result_report(root: Path, manifest: dict) -> None:
         status=manifest["status"],
         finalized_at=manifest["finalizedAt"],
         report_sha256=report_hash,
+        distribution_class=manifest["rights"]["distributionClass"],
     )
     require(stored == expected, "result-report summary does not match terminal target results")
     require((report_root / "index.html").read_bytes() == result_report_html(stored), "result-report HTML does not match its result summary")
@@ -540,6 +748,7 @@ def validate_result_report(root: Path, manifest: dict) -> None:
         report_root / "decision",
         expected_report_sha256=report_hash,
         distribution_class=manifest["rights"]["distributionClass"],
+        approved_report=archived_approved_report(root),
     )
 
 
@@ -752,6 +961,7 @@ def initial_target_result(
         "claimStatus": "not-tested" if mode == "scientific-reproduction" else "not-applicable",
         "summary": "Run has not reached a terminal state.",
         "outputs": [],
+        "calibration": None,
         "warnings": [],
         "errors": [],
     }
@@ -845,13 +1055,20 @@ def initialize_bundle(args: argparse.Namespace) -> Path:
         workspace = checked_existing_directory(args.workspace_root, "approval workspace root")
         relative_root = context["gate"].get("outputPolicy", {}).get("relativeRoot")
         require(isinstance(relative_root, str) and safe_relative(relative_root), "approval output root is unsafe")
-        expected_parent = (workspace / PurePosixPath(relative_root)).resolve(strict=False)
+        expected_parent = approved_descendant_directory(
+            workspace, relative_root, "approval output root", create=False,
+        )
         require(
             requested_parent.resolve(strict=False) == expected_parent,
             f"output root is not the approval-bound path: {expected_parent}",
         )
-    requested_parent.mkdir(parents=True, exist_ok=True)
-    parent = checked_existing_directory(requested_parent, "bundle parent")
+        parent = approved_descendant_directory(
+            workspace, relative_root, "approval output root", create=True,
+        )
+        parent = checked_existing_directory(parent, "bundle parent")
+    else:
+        requested_parent.mkdir(parents=True, exist_ok=True)
+        parent = checked_existing_directory(requested_parent, "bundle parent")
     parsed_targets = selected_targets(args, context)
     target_ids = [target_id for target_id, _ in parsed_targets]
     require(len(target_ids) == len(set(target_ids)), "target IDs must be unique")
@@ -985,6 +1202,8 @@ def file_role(relative: str) -> str:
         return "code"
     if relative.startswith("shared/config/"):
         return "configuration"
+    if relative.endswith("/adjustments.json"):
+        return "validation"
     if "/validation/" in relative:
         return "validation"
     if "/outputs/" in relative:
@@ -1010,7 +1229,12 @@ def inventory(root: Path) -> list[dict]:
     return entries
 
 
-def target_records(root: Path, expected_targets: list[dict] | None = None) -> list[dict]:
+def target_records(
+    root: Path,
+    expected_targets: list[dict] | None = None,
+    *,
+    distribution_class: str = "local-private",
+) -> list[dict]:
     targets_root = root / "targets"
     require(targets_root.exists(), "bundle is missing targets/")
     records = []
@@ -1020,7 +1244,14 @@ def target_records(root: Path, expected_targets: list[dict] | None = None) -> li
         require(bool(IDENTIFIER.fullmatch(target_id)), f"unsafe target directory name: {target_id}")
         result = read_object(target_dir / "result.json", f"{target_id} result")
         validation = read_object(target_dir / "validation/summary.json", f"{target_id} validation summary")
-        validate_target_documents(root, target_id, result, validation, terminal=True)
+        validate_target_documents(
+            root,
+            target_id,
+            result,
+            validation,
+            terminal=True,
+            distribution_class=distribution_class,
+        )
         records.append(
             {
                 "targetId": target_id,
@@ -1054,17 +1285,469 @@ def validate_artifact_references(
     values: object,
     label: str,
     allowed_prefixes: tuple[str, ...],
+    allowed_exact: tuple[str, ...] = (),
 ) -> list[str]:
     require(isinstance(values, list), f"{target_id}: {label} must be an array of bundle-relative paths")
     require(all(isinstance(value, str) and safe_relative(value) for value in values), f"{target_id}: unsafe {label} path")
     require(len(values) == len(set(values)), f"{target_id}: duplicate {label} path")
     for relative in values:
-        require(any(relative.startswith(prefix) for prefix in allowed_prefixes), f"{target_id}: {label} path escapes its target/shared scope: {relative}")
+        require(
+            relative in allowed_exact or any(relative.startswith(prefix) for prefix in allowed_prefixes),
+            f"{target_id}: {label} path escapes its target/shared scope: {relative}",
+        )
         require_regular_member(root / relative, f"{target_id} {label} artifact")
     return values
 
 
-def validate_target_documents(root: Path, target_id: str, result: dict, validation: dict, *, terminal: bool) -> None:
+def require_named_figure_path(
+    root: Path,
+    target_id: str,
+    value: object,
+    stem: str,
+    label: str,
+) -> str:
+    require(isinstance(value, str) and safe_relative(value), f"{target_id}: {label} path is unsafe")
+    path = PurePosixPath(value)
+    require(
+        path.parent.as_posix() == f"targets/{target_id}/outputs"
+        and path.stem == stem
+        and path.suffix.lower() in FIGURE_ARTIFACT_SUFFIXES,
+        f"{target_id}: {label} must be outputs/{stem}.<figure-format>",
+    )
+    require_regular_member(root / value, f"{target_id} {label}")
+    return value
+
+
+def require_named_validation_path(
+    root: Path,
+    target_id: str,
+    value: object,
+    relative_name: str,
+    label: str,
+) -> str:
+    expected = f"targets/{target_id}/validation/{relative_name}"
+    require(value == expected, f"{target_id}: {label} must be {expected}")
+    require_regular_member(root / expected, f"{target_id} {label}")
+    return expected
+
+
+def require_nonempty_string(value: object, message: str) -> str:
+    require(isinstance(value, str) and value.strip(), message)
+    return value.strip()
+
+
+def require_neutral_integrity_language(value: str, target_id: str, label: str) -> None:
+    require(
+        DIRECT_MISCONDUCT_ALLEGATION.search(value) is None,
+        f"{target_id}: {label} makes a direct misconduct/fabrication allegation; record only a neutral potential research-integrity concern",
+    )
+
+
+def require_exact_keys(value: dict, keys: set[str], message: str) -> None:
+    require(set(value) == keys, message)
+
+
+def validate_adjustment_change(target_id: str, number: int, change: object) -> None:
+    require(isinstance(change, dict), f"{target_id}: round {number} change must be an object")
+    if number == 2:
+        require_exact_keys(
+            change,
+            {"changeDomain", "subject", "before", "after", "reason"},
+            f"{target_id}: round 2 changes have missing or unknown fields",
+        )
+        require(
+            change.get("changeDomain") in PRESENTATION_CHANGE_DOMAINS,
+            f"{target_id}: round 2 changeDomain must be presentation-only; axis scale, units, and range belong in V1",
+        )
+    else:
+        require_exact_keys(
+            change,
+            {
+                "changeDomain", "subject", "before", "after", "reason",
+                "diagnosisRef", "evidenceRefs", "scientificBasis",
+            },
+            f"{target_id}: scientific-round changes have missing or unknown fields",
+        )
+        require(
+            change.get("changeDomain") in SCIENTIFIC_CHANGE_DOMAINS,
+            f"{target_id}: round {number} changeDomain must be scientific",
+        )
+        diagnosis = change.get("diagnosisRef")
+        require(diagnosis is None or (isinstance(diagnosis, str) and diagnosis.strip()), f"{target_id}: invalid diagnosisRef")
+        evidence = change.get("evidenceRefs")
+        require(
+            isinstance(evidence, list) and all(isinstance(item, str) and item.strip() for item in evidence),
+            f"{target_id}: evidenceRefs must be an array of non-empty references",
+        )
+        basis = change.get("scientificBasis")
+        require(basis is None or (isinstance(basis, str) and basis.strip()), f"{target_id}: invalid scientificBasis")
+        require(
+            bool((isinstance(diagnosis, str) and diagnosis.strip()) or evidence or (isinstance(basis, str) and basis.strip())),
+            f"{target_id}: round {number} scientific change requires diagnosisRef, evidenceRefs, or scientificBasis",
+        )
+    require_nonempty_string(change.get("subject"), f"{target_id}: round {number} change subject is required")
+    require_nonempty_string(change.get("reason"), f"{target_id}: round {number} change reason is required")
+    require("before" in change and "after" in change, f"{target_id}: round {number} change requires before and after")
+    require(
+        canonical_hash(change["before"]) != canonical_hash(change["after"]),
+        f"{target_id}: round {number} change must alter the recorded value",
+    )
+
+
+def validate_comparison_record(
+    root: Path,
+    target_id: str,
+    record: object,
+    *,
+    expected_id: str,
+    expected_output: str,
+    distribution_class: str,
+) -> str:
+    require(isinstance(record, dict), f"{target_id}: comparison record must be an object")
+    require_exact_keys(
+        record,
+        {"comparisonId", "output", "mode", "artifact", "targetPixelRights"},
+        f"{target_id}: comparison record has missing or unknown fields",
+    )
+    require(record.get("comparisonId") == expected_id, f"{target_id}: expected {expected_id} comparison")
+    require(record.get("output") == expected_output, f"{target_id}: {expected_id} output binding is wrong")
+    mode = record.get("mode")
+    require(mode in COMPARISON_MODES, f"{target_id}: invalid comparison mode")
+    relative = record.get("artifact")
+    require(isinstance(relative, str) and safe_relative(relative), f"{target_id}: unsafe comparison artifact path")
+    path = PurePosixPath(relative)
+    require(
+        path.parent.as_posix() == f"targets/{target_id}/validation/comparisons"
+        and path.stem == expected_id
+        and path.suffix.lower() in RESULT_IMAGE_SUFFIXES,
+        f"{target_id}: {expected_id} must be an image under validation/comparisons/",
+    )
+    require_regular_member(root / relative, f"{target_id} {expected_id} comparison")
+    rights = record.get("targetPixelRights")
+    require(isinstance(rights, dict), f"{target_id}: comparison targetPixelRights must be an object")
+    require_exact_keys(
+        rights,
+        {"included", "sourceId", "redistributionStatus"},
+        f"{target_id}: comparison targetPixelRights fields are invalid",
+    )
+    if mode == "metrics-only":
+        require(
+            rights == {"included": False, "sourceId": None, "redistributionStatus": "not-included"},
+            f"{target_id}: metrics-only comparison must exclude target pixels",
+        )
+    else:
+        require(rights.get("included") is True, f"{target_id}: side-by-side comparison includes target pixels")
+        source_id = rights.get("sourceId")
+        require(isinstance(source_id, str) and bool(IDENTIFIER.fullmatch(source_id)), f"{target_id}: side-by-side comparison needs a sourceId")
+        allowed_rights = {"local-only", "permitted", "public-domain", "generated"}
+        require(rights.get("redistributionStatus") in allowed_rights, f"{target_id}: invalid target-pixel rights")
+        sources = read_object(root / "shared/provenance/sources.json", "sources record")
+        source = next((item for item in sources.get("sources", []) if item.get("sourceId") == source_id), None)
+        require(isinstance(source, dict), f"{target_id}: target-pixel sourceId is not declared")
+        require(
+            source.get("redistributionStatus") == rights["redistributionStatus"],
+            f"{target_id}: comparison rights disagree with the declared target source",
+        )
+        if distribution_class == "shareable":
+            require(
+                rights["redistributionStatus"] in {"permitted", "public-domain", "generated"},
+                f"{target_id}: shareable side-by-side comparison lacks target-pixel redistribution rights",
+            )
+    return relative
+
+
+def validate_calibration_documents(
+    root: Path,
+    target_id: str,
+    result: dict,
+    validation: dict,
+    output_refs: list[str],
+    validation_artifacts: list[str],
+    distribution_class: str,
+) -> None:
+    """Validate the bounded V0/V1/V2 comparison and adjustment record.
+
+    V0 and the comparison/quality records are mandatory for a complete or
+    partial figure result. V1 and V2 are optional: an unneeded round must not
+    be represented by a placeholder artifact. Round 3+ is possible only when
+    its record binds a new testable hypothesis and a target-specific approval.
+    """
+    calibration = result.get("calibration")
+    require(isinstance(calibration, dict), f"{target_id}: completed/partial work requires calibration metadata")
+    required_fields = {
+        "baselineV0", "scientificV1", "presentationV2", "selectedOutput",
+        "comparisons", "differenceSummary", "visualQualityCheck", "adjustments",
+    }
+    require(set(calibration) == required_fields, f"{target_id}: calibration fields are missing or unknown")
+
+    baseline = require_named_figure_path(
+        root, target_id, calibration["baselineV0"], "baseline-v0", "baseline V0"
+    )
+    scientific_v1 = calibration["scientificV1"]
+    if scientific_v1 is not None:
+        scientific_v1 = require_named_figure_path(
+            root, target_id, scientific_v1, "calibrated-v1", "scientific V1"
+        )
+    presentation_v2 = calibration["presentationV2"]
+    if presentation_v2 is not None:
+        presentation_v2 = require_named_figure_path(
+            root, target_id, presentation_v2, "final-v2", "presentation V2"
+        )
+
+    comparisons = calibration["comparisons"]
+    require(isinstance(comparisons, list), f"{target_id}: calibration comparisons must be an array")
+    comparison_ids = [item.get("comparisonId") for item in comparisons if isinstance(item, dict)]
+    require(
+        len(comparison_ids) == len(comparisons) and len(comparison_ids) == len(set(comparison_ids)),
+        f"{target_id}: calibration comparisons must have unique comparisonId values",
+    )
+    require(
+        set(comparison_ids).issubset({"original-vs-v0", "original-vs-final"}),
+        f"{target_id}: calibration comparisonId is unknown",
+    )
+    baseline_record = next(
+        (item for item in comparisons if item.get("comparisonId") == "original-vs-v0"), None
+    )
+    require(baseline_record is not None, f"{target_id}: original-vs-v0 comparison is required")
+    comparison_paths = {
+        validate_comparison_record(
+            root,
+            target_id,
+            baseline_record,
+            expected_id="original-vs-v0",
+            expected_output=baseline,
+            distribution_class=distribution_class,
+        )
+    }
+
+    difference_path = require_named_validation_path(
+        root, target_id, calibration["differenceSummary"], "difference-summary.json", "difference summary"
+    )
+    quality_path = require_named_validation_path(
+        root, target_id, calibration["visualQualityCheck"], "visual-quality-check.json", "visual quality check"
+    )
+    adjustments_path = f"targets/{target_id}/adjustments.json"
+    require(calibration["adjustments"] == adjustments_path, f"{target_id}: adjustments must be {adjustments_path}")
+    require_regular_member(root / adjustments_path, f"{target_id} adjustments")
+
+    required_output_refs = {baseline}
+    if scientific_v1 is not None:
+        required_output_refs.add(scientific_v1)
+    if presentation_v2 is not None:
+        required_output_refs.add(presentation_v2)
+    require(required_output_refs.issubset(output_refs), f"{target_id}: versioned figures must be declared in result.outputs")
+    required_validation_refs = {
+        *comparison_paths,
+        difference_path,
+        quality_path,
+        adjustments_path,
+    }
+    require(
+        required_validation_refs.issubset(validation_artifacts),
+        f"{target_id}: comparison, difference, quality, and adjustment records must be validation artifacts",
+    )
+
+    difference = read_object(root / difference_path, f"{target_id} difference summary")
+    require(difference.get("schemaVersion") == DIFFERENCE_SUMMARY_SCHEMA, f"{target_id}: unsupported difference-summary schema")
+    require_exact_keys(
+        difference,
+        {"schemaVersion", "targetId", "baseline", "selected", "dimensions", "scientificConclusion", "remainingDifferences"},
+        f"{target_id}: difference-summary fields are missing or unknown",
+    )
+    require(difference.get("targetId") == target_id, f"{target_id}: difference-summary target mismatch")
+    require(difference.get("baseline") == baseline, f"{target_id}: difference-summary baseline mismatch")
+    dimensions = difference.get("dimensions")
+    required_dimensions = {
+        "axesUnitsScale", "trendsPeaksMagnitude", "colorsLinesLegends", "layoutTypography",
+    }
+    require(isinstance(dimensions, dict) and set(dimensions) == required_dimensions, f"{target_id}: difference-summary dimensions are incomplete")
+    for name, assessment in dimensions.items():
+        require_nonempty_string(assessment, f"{target_id}: difference-summary {name} assessment is required")
+    scientific_conclusion = require_nonempty_string(
+        difference.get("scientificConclusion"), f"{target_id}: difference-summary scientific conclusion is required"
+    )
+    if result.get("workflowMode") == "scientific-reproduction":
+        require_neutral_integrity_language(
+            scientific_conclusion, target_id, "difference-summary scientificConclusion",
+        )
+    require(
+        isinstance(difference.get("remainingDifferences"), list)
+        and all(isinstance(item, str) and item.strip() for item in difference["remainingDifferences"]),
+        f"{target_id}: remainingDifferences must be an array of strings",
+    )
+
+    quality = read_object(root / quality_path, f"{target_id} visual quality check")
+    require(quality.get("schemaVersion") == VISUAL_QUALITY_SCHEMA, f"{target_id}: unsupported visual-quality schema")
+    require_exact_keys(
+        quality,
+        {"schemaVersion", "targetId", "status", "checks", "issuesRemaining"},
+        f"{target_id}: visual-quality fields are missing or unknown",
+    )
+    require(quality.get("targetId") == target_id, f"{target_id}: visual-quality target mismatch")
+    require(quality.get("status") in {"passed", "issues-remain"}, f"{target_id}: invalid visual-quality status")
+    checks = quality.get("checks")
+    required_checks = {"textOverlap", "legendDataOverlap", "clipping", "contrast", "readability"}
+    require(isinstance(checks, dict) and set(checks) == required_checks, f"{target_id}: visual-quality checks are incomplete")
+    for name, assessment in checks.items():
+        require_nonempty_string(assessment, f"{target_id}: visual-quality {name} assessment is required")
+    require(
+        isinstance(quality.get("issuesRemaining"), list)
+        and all(isinstance(item, str) and item.strip() for item in quality["issuesRemaining"]),
+        f"{target_id}: visual-quality issuesRemaining must be an array of strings",
+    )
+    require(
+        (quality["status"] == "passed" and not quality["issuesRemaining"])
+        or (quality["status"] == "issues-remain" and bool(quality["issuesRemaining"])),
+        f"{target_id}: visual-quality status and remaining issues disagree",
+    )
+
+    adjustments = read_object(root / adjustments_path, f"{target_id} adjustments")
+    require(adjustments.get("schemaVersion") == ADJUSTMENTS_SCHEMA, f"{target_id}: unsupported adjustments schema")
+    require_exact_keys(
+        adjustments,
+        {"schemaVersion", "targetId", "rounds", "selectedOutput", "stopReason"},
+        f"{target_id}: adjustments fields are missing or unknown",
+    )
+    require(adjustments.get("targetId") == target_id, f"{target_id}: adjustments target mismatch")
+    rounds = adjustments.get("rounds")
+    require(isinstance(rounds, list), f"{target_id}: adjustments rounds must be an array")
+    round_numbers: list[int] = []
+    round_outputs: dict[int, str] = {}
+    extension_hypotheses: set[str] = set()
+    extension_approval_ids: set[str] = set()
+    extension_idempotency_keys: set[str] = set()
+    for record in rounds:
+        require(isinstance(record, dict), f"{target_id}: each adjustment round must be an object")
+        number = record.get("round")
+        require(type(number) is int and number >= 1, f"{target_id}: adjustment round number must be a positive integer")
+        require(number not in round_numbers, f"{target_id}: adjustment round numbers must be unique")
+        round_numbers.append(number)
+        expected_kind = "scientific-difference" if number == 1 else "presentation-quality" if number == 2 else "scientific-hypothesis"
+        expected_fields = {"round", "kind", "output", "rationale", "changes"}
+        if number >= 3:
+            expected_fields.add("hypothesis")
+            if "approvalEvidence" in record:
+                expected_fields.add("approvalEvidence")
+        require_exact_keys(
+            record,
+            expected_fields,
+            f"{target_id}: round {number} fields are missing or unknown",
+        )
+        require(record.get("kind") == expected_kind, f"{target_id}: round {number} has the wrong adjustment kind")
+        require_nonempty_string(record.get("rationale"), f"{target_id}: round {number} rationale is required")
+        require(
+            isinstance(record.get("changes"), list)
+            and bool(record["changes"])
+            and all(isinstance(item, dict) for item in record["changes"]),
+            f"{target_id}: round {number} changes must be a non-empty array of objects",
+        )
+        for change in record["changes"]:
+            validate_adjustment_change(target_id, number, change)
+        expected_stem = "calibrated-v1" if number == 1 else "final-v2" if number == 2 else f"calibrated-v{number}"
+        output = require_named_figure_path(root, target_id, record.get("output"), expected_stem, f"round {number} output")
+        require(output in output_refs, f"{target_id}: round {number} output is absent from result.outputs")
+        round_outputs[number] = output
+        if number >= 3:
+            hypothesis = require_nonempty_string(
+                record.get("hypothesis"), f"{target_id}: round {number} requires a new testable hypothesis"
+            )
+            require(
+                hypothesis not in extension_hypotheses,
+                f"{target_id}: round {number} must introduce a new testable hypothesis",
+            )
+            extension_hypotheses.add(hypothesis)
+            approval_relative = f"targets/{target_id}/validation/calibration-round-{number}-approval.json"
+            require(record.get("approvalEvidence") == approval_relative, f"{target_id}: round {number} requires {approval_relative}")
+            require(approval_relative in validation_artifacts, f"{target_id}: round {number} approval must be a validation artifact")
+            approval = read_object(root / approval_relative, f"{target_id} round {number} approval")
+            require(approval.get("schemaVersion") == CALIBRATION_APPROVAL_SCHEMA, f"{target_id}: unsupported calibration approval schema")
+            require_exact_keys(
+                approval,
+                {
+                    "schemaVersion", "approvalId", "idempotencyKey", "targetId", "round",
+                    "decision", "hypothesis", "approvedAt", "previousOutput",
+                    "previousOutputSha256", "maxAttempts",
+                },
+                f"{target_id}: round {number} approval fields are missing or unknown",
+            )
+            require(
+                approval.get("targetId") == target_id
+                and type(approval.get("round")) is int
+                and approval.get("round") == number
+                and approval.get("decision") == "approve"
+                and approval.get("hypothesis") == hypothesis,
+                f"{target_id}: round {number} approval does not bind the hypothesis",
+            )
+            approval_id = approval.get("approvalId")
+            idempotency_key = approval.get("idempotencyKey")
+            require(
+                isinstance(approval_id, str) and bool(IDENTIFIER.fullmatch(approval_id))
+                and approval_id not in extension_approval_ids,
+                f"{target_id}: round {number} approvalId must be unique and path-safe",
+            )
+            require(
+                isinstance(idempotency_key, str) and bool(IDENTIFIER.fullmatch(idempotency_key))
+                and idempotency_key not in extension_idempotency_keys,
+                f"{target_id}: round {number} idempotencyKey must be unique and path-safe",
+            )
+            extension_approval_ids.add(approval_id)
+            extension_idempotency_keys.add(idempotency_key)
+            previous_output = round_outputs.get(number - 1)
+            require(previous_output is not None, f"{target_id}: round {number} has no prior output to approve")
+            require(approval.get("previousOutput") == previous_output, f"{target_id}: round {number} approval does not bind the prior output")
+            require(
+                isinstance(approval.get("previousOutputSha256"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", approval["previousOutputSha256"])
+                and approval["previousOutputSha256"] == sha256_file(root / previous_output),
+                f"{target_id}: round {number} approval prior-output hash mismatch",
+            )
+            require(
+                type(approval.get("maxAttempts")) is int and 1 <= approval["maxAttempts"] <= 10,
+                f"{target_id}: round {number} approval maxAttempts must be an integer from 1 to 10",
+            )
+            parse_timestamp(approval.get("approvedAt"), f"{target_id} round {number} approval approvedAt")
+    require(round_numbers == sorted(round_numbers), f"{target_id}: adjustment rounds must be ordered")
+    if any(number >= 3 for number in round_numbers):
+        require(
+            round_numbers == list(range(1, max(round_numbers) + 1)),
+            f"{target_id}: extended calibration rounds must preserve the complete V1..Vn history",
+        )
+    require((1 in round_outputs) == (scientific_v1 is not None), f"{target_id}: V1 artifact and round record disagree")
+    require((2 in round_outputs) == (presentation_v2 is not None), f"{target_id}: V2 artifact and round record disagree")
+
+    available_outputs = {baseline, *round_outputs.values()}
+    selected = calibration["selectedOutput"]
+    require(selected in available_outputs, f"{target_id}: selectedOutput is not a recorded version")
+    require(adjustments.get("selectedOutput") == selected, f"{target_id}: selected output disagrees with adjustments")
+    require(difference.get("selected") == selected, f"{target_id}: selected output disagrees with difference summary")
+    require_nonempty_string(adjustments.get("stopReason"), f"{target_id}: bounded calibration stop reason is required")
+    if selected != baseline:
+        final_record = next(
+            (item for item in comparisons if item.get("comparisonId") == "original-vs-final"), None
+        )
+        require(final_record is not None, f"{target_id}: original-vs-final comparison is required when a calibrated output is selected")
+        final_comparison = validate_comparison_record(
+            root,
+            target_id,
+            final_record,
+            expected_id="original-vs-final",
+            expected_output=selected,
+            distribution_class=distribution_class,
+        )
+        require(final_comparison in validation_artifacts, f"{target_id}: original-vs-final must be a validation artifact")
+    else:
+        require("original-vs-final" not in comparison_ids, f"{target_id}: original-vs-final is misleading when V0 is selected")
+
+
+def validate_target_documents(
+    root: Path,
+    target_id: str,
+    result: dict,
+    validation: dict,
+    *,
+    terminal: bool,
+    distribution_class: str,
+) -> None:
     require(result.get("schemaVersion") == TARGET_RESULT_SCHEMA, f"{target_id}: unsupported result schema")
     require(result.get("targetId") == target_id, f"{target_id}: result target ID mismatch")
     require(result.get("workflowMode") in WORKFLOW_MODES, f"{target_id}: invalid workflow mode")
@@ -1087,6 +1770,11 @@ def validate_target_documents(root: Path, target_id: str, result: dict, validati
     if result.get("workflowMode") == "image-derived-reconstruction":
         require(claim == "not-applicable", f"{target_id}: image-derived work cannot test a paper claim")
     require(isinstance(result.get("summary"), str) and result["summary"].strip(), f"{target_id}: result summary is required")
+    if (
+        result.get("workflowMode") == "scientific-reproduction"
+        and status in {"complete", "partial"}
+    ):
+        require_neutral_integrity_language(result["summary"], target_id, "result summary")
     output_refs = validate_artifact_references(
         root,
         target_id,
@@ -1129,6 +1817,7 @@ def validate_target_documents(root: Path, target_id: str, result: dict, validati
             f"targets/{target_id}/derived/",
             "shared/artifacts/",
         ),
+        (f"targets/{target_id}/adjustments.json",),
     )
 
     validation_status = validation["status"]
@@ -1170,6 +1859,17 @@ def validate_target_documents(root: Path, target_id: str, result: dict, validati
         elif status == "complete":
             raise BundleError(f"{target_id}: a completed scientific target cannot leave the claim untested")
 
+    if status in {"complete", "partial"}:
+        validate_calibration_documents(
+            root,
+            target_id,
+            result,
+            validation,
+            output_refs,
+            validation_artifacts,
+            distribution_class,
+        )
+
 
 def terminalize_pending_targets(root: Path, status: str, reason: str | None) -> None:
     for result_path in sorted((root / "targets").glob("*/result.json")):
@@ -1205,7 +1905,13 @@ def validate_aggregate_status(status: str, targets: list[dict]) -> None:
     require(status == expected, f"bundle status {status} is inconsistent with target statuses {statuses}; expected {expected}")
 
 
-def update_readme_status(root: Path, status: str, finalized_at: str, expected_targets: list[dict]) -> None:
+def update_readme_status(
+    root: Path,
+    status: str,
+    finalized_at: str,
+    expected_targets: list[dict],
+    distribution_class: str,
+) -> None:
     path = root / "README.md"
     text = path.read_text(encoding="utf-8")
     text = re.sub(r"\*\*Status:\*\*\s+[^\n]+", f"**Status:** {status}  ", text, count=1)
@@ -1222,7 +1928,11 @@ def update_readme_status(root: Path, status: str, finalized_at: str, expected_ta
     if start_marker in text and end_marker in text:
         rows = ["| Target | Execution | Validation | Claim |", "|---|---|---|---|"]
         details = []
-        for record in target_records(root, expected_targets):
+        for record in target_records(
+            root,
+            expected_targets,
+            distribution_class=distribution_class,
+        ):
             rows.append(
                 f"| `{record['targetId']}` | {record['operationalStatus']} | "
                 f"{record['validationStatus']} | {record['claimStatus']} |"
@@ -1239,7 +1949,11 @@ def update_readme_status(root: Path, status: str, finalized_at: str, expected_ta
 
 def build_manifest(root: Path, state: dict, status: str, finalized_at: str) -> dict:
     files = inventory(root)
-    targets = target_records(root, state["targets"])
+    targets = target_records(
+        root,
+        state["targets"],
+        distribution_class=state["distributionClass"],
+    )
     validate_aggregate_status(status, targets)
     plan_paths = {
         name: relative for name, relative in PLAN_INPUTS.items() if (root / relative).is_file()
@@ -1251,7 +1965,7 @@ def build_manifest(root: Path, state: dict, status: str, finalized_at: str) -> d
         "runId": state["runId"],
         "createdAt": state["createdAt"],
         "finalizedAt": finalized_at,
-        "generator": {"name": "SciRepro", "component": "finalize_run_bundle.py", "schema": 1},
+        "generator": {"name": "SciRepro", "component": "finalize_run_bundle.py", "schema": 2},
         "status": status,
         "planBindings": state["planBindings"],
         "scope": {"targetCount": len(targets), "targetIds": [target["targetId"] for target in targets]},
@@ -1414,6 +2128,213 @@ def validate_required_json(root: Path) -> None:
     environment = read_object(root / "shared/environment/environment.json", "environment record")
     require(environment.get("captureStatus") in {"not-recorded", "partial", "recorded"}, "environment captureStatus is invalid")
     require(isinstance(environment.get("runtime"), dict), "environment runtime must be an object")
+    resources = read_object(root / "shared/execution/resource-usage.json", "resource-usage record")
+    require(
+        resources.get("measurementStatus") in {"not-recorded", "partial", "recorded"},
+        "resource-usage measurementStatus is invalid",
+    )
+    require_exact_keys(
+        resources,
+        {
+            "schemaVersion", "measurementStatus", "wallSeconds", "peakMemoryBytes",
+            "diskBytes", "networkBytes", "cost",
+        },
+        "resource-usage fields are missing or unknown",
+    )
+    numeric_fields = ("wallSeconds", "peakMemoryBytes", "diskBytes", "networkBytes")
+    for field in numeric_fields:
+        value = resources.get(field)
+        require(
+            value is None or (type(value) in {int, float} and value >= 0),
+            f"resource-usage {field} must be null or a non-negative number",
+        )
+    if resources["measurementStatus"] in {"partial", "recorded"}:
+        require(
+            any(resources.get(field) is not None for field in (*numeric_fields, "cost")),
+            "measured resource usage requires at least one recorded measurement",
+        )
+
+
+def validate_archived_parameter_value(spec: dict, value: object, label: str) -> None:
+    kind = spec.get("type")
+    if kind == "string":
+        require(isinstance(value, str) and len(value) <= 4096, f"{label}: expected a bounded string")
+    elif kind == "integer":
+        require(type(value) is int, f"{label}: expected integer")
+    elif kind == "number":
+        try:
+            finite = type(value) in {int, float} and math.isfinite(value)
+        except OverflowError:
+            finite = False
+        require(
+            finite,
+            f"{label}: expected finite number",
+        )
+    elif kind == "boolean":
+        require(type(value) is bool, f"{label}: expected boolean")
+    elif kind == "enum":
+        require(value in spec.get("enum", []), f"{label}: invalid enum value")
+    elif kind == "relative-path":
+        require(isinstance(value, str) and safe_relative(value), f"{label}: unsafe relative path")
+    else:
+        raise BundleError(f"{label}: unsupported parameter type")
+    try:
+        require_secret_free(value, f"{label} value")
+    except PhaseOneReportError as exc:
+        raise BundleError(str(exc)) from exc
+    if type(value) in {int, float}:
+        if "min" in spec:
+            require(value >= spec["min"], f"{label}: below minimum")
+        if "max" in spec:
+            require(value <= spec["max"], f"{label}: above maximum")
+
+
+def validate_archived_gate_authority(
+    report: dict,
+    approval: dict,
+    gate: dict,
+    targets: dict[str, dict],
+) -> None:
+    """Reconstruct the approved authority from immutable report semantics.
+
+    Hashes make changes visible but do not prove that a recomputed gate still
+    represents the report and approval.  This check independently crosses all
+    execution-bearing values back to those two source records.
+    """
+    figures = {figure.get("figureId"): figure for figure in report.get("figures", [])}
+    selections = approval.get("selectedFigures")
+    require(isinstance(selections, list) and selections, "archived approval selectedFigures are missing")
+    require(all(isinstance(item, dict) for item in selections), "archived approval selection is invalid")
+    selection_fields = {"figureId", "sourceImageSha256", "routeId", "parameters", "deliverables"}
+    for item in selections:
+        require(set(item) == selection_fields, "archived approval selection fields are invalid")
+    selection_ids = [item.get("figureId") for item in selections]
+    require(
+        all(isinstance(value, str) and value in figures for value in selection_ids)
+        and len(selection_ids) == len(set(selection_ids)),
+        "archived approval selected figure scope is invalid",
+    )
+    require(gate.get("selectedFigures") == selection_ids, "archived gate selectedFigures differ from approval")
+
+    bindings = gate.get("selectedTargets")
+    require(
+        isinstance(bindings, list) and len(bindings) == len(selections),
+        "archived gate selected target count differs from approval",
+    )
+    binding_fields = {
+        "figureId", "targetId", "targetSha256", "workflowMode", "routeId",
+        "parameters", "deliverables",
+    }
+    selected_effects: set[str] = set()
+    seen_targets: set[str] = set()
+    for selection, binding in zip(selections, bindings):
+        require(isinstance(binding, dict) and set(binding) == binding_fields, "archived gate selected target fields are invalid")
+        figure_id = selection["figureId"]
+        require(binding.get("figureId") == figure_id, f"{figure_id}: gate figure binding differs from approval")
+        figure = figures[figure_id]
+        target = figure.get("target", {})
+        target_id = target.get("targetId")
+        require(target_id in targets and target_id not in seen_targets, f"{figure_id}: gate target scope is invalid")
+        seen_targets.add(target_id)
+        manifest_target = targets[target_id]
+        require(
+            selection.get("sourceImageSha256") == target.get("targetSha256") == manifest_target.get("targetSha256"),
+            f"{figure_id}: approval target hash differs from report/manifest",
+        )
+        require(binding.get("targetId") == target_id, f"{figure_id}: gate targetId differs from report")
+        require(binding.get("targetSha256") == target["targetSha256"], f"{figure_id}: gate target hash differs from approval/report")
+        require(
+            binding.get("workflowMode") == target.get("workflowMode") == manifest_target.get("workflowMode"),
+            f"{figure_id}: gate workflow differs from report/manifest",
+        )
+
+        routes = {route.get("routeId"): route for route in figure.get("routes", [])}
+        route_id = selection.get("routeId")
+        require(
+            isinstance(route_id, str)
+            and route_id in routes
+            and binding.get("routeId") == route_id,
+            f"{figure_id}: gate route differs from approval/report",
+        )
+        route = routes[route_id]
+        require(route.get("status") != "blocked" and not route.get("blockers"), f"{figure_id}: archived gate selects a blocked route")
+
+        parameter_values = selection.get("parameters")
+        require(isinstance(parameter_values, dict), f"{figure_id}: approval parameters must be an object")
+        require(binding.get("parameters") == parameter_values, f"{figure_id}: gate parameters differ from approval")
+        parameter_specs = {item.get("parameterId"): item for item in route.get("parameters", [])}
+        require(set(parameter_values) <= set(parameter_specs), f"{figure_id}: approval/gate contains an undeclared parameter")
+        for parameter_id, spec in parameter_specs.items():
+            if spec.get("required"):
+                require(parameter_id in parameter_values, f"{figure_id}: approved route is missing required parameter {parameter_id}")
+            if parameter_id in parameter_values:
+                validate_archived_parameter_value(spec, parameter_values[parameter_id], f"{figure_id}.{parameter_id}")
+
+        deliverables = selection.get("deliverables")
+        require(
+            isinstance(deliverables, list)
+            and bool(deliverables)
+            and all(isinstance(item, str) and item for item in deliverables)
+            and len(deliverables) == len(set(deliverables)),
+            f"{figure_id}: approval deliverables are invalid",
+        )
+        require(binding.get("deliverables") == deliverables, f"{figure_id}: gate deliverables differ from approval")
+        declared_deliverables = {item.get("kind") for item in route.get("deliverables", [])}
+        require(set(deliverables) <= declared_deliverables, f"{figure_id}: approval/gate contains an undeclared deliverable")
+        route_effects = route.get("effects")
+        require(
+            isinstance(route_effects, list)
+            and all(isinstance(effect, str) and effect for effect in route_effects)
+            and len(route_effects) == len(set(route_effects)),
+            f"{figure_id}: selected route effects are invalid",
+        )
+        selected_effects.update(route_effects)
+
+    approval_effects = approval.get("authorizedEffects")
+    gate_effects = gate.get("authorizedEffects")
+    require(
+        isinstance(approval_effects, list)
+        and all(isinstance(effect, str) and effect for effect in approval_effects)
+        and len(approval_effects) == len(set(approval_effects)),
+        "archived approval authorizedEffects are invalid",
+    )
+    require(
+        isinstance(gate_effects, list)
+        and all(isinstance(effect, str) and effect for effect in gate_effects)
+        and len(gate_effects) == len(set(gate_effects)),
+        "archived gate authorizedEffects are invalid",
+    )
+    require(
+        set(approval_effects) == set(gate_effects) == selected_effects,
+        "archived authorizedEffects differ from approval or selected report routes",
+    )
+    require(gate_effects == sorted(gate_effects), "archived gate authorizedEffects must be canonical")
+
+    policy = report.get("approvalPolicy", {})
+    allowed_effects = set(policy.get("allowedEffects", [])) | set(policy.get("consentRequiredEffects", []))
+    require(selected_effects <= allowed_effects, "archived selected route contains an undeclared effect")
+    acknowledgements = approval.get("acknowledgements")
+    require(isinstance(acknowledgements, list), "archived approval acknowledgements must be a list")
+    acknowledged: set[str] = set()
+    created_at = parse_timestamp(approval.get("createdAt"), "archived approval createdAt")
+    expires_at = parse_timestamp(approval.get("expiresAt"), "archived approval expiresAt")
+    require(created_at < expires_at, "archived approval timestamps are invalid")
+    for acknowledgement in acknowledgements:
+        require(
+            isinstance(acknowledgement, dict)
+            and set(acknowledgement) == {"effect", "acceptedAt"},
+            "archived approval acknowledgement fields are invalid",
+        )
+        effect = acknowledgement.get("effect")
+        require(isinstance(effect, str) and effect not in acknowledged, "archived approval acknowledgement effect is invalid")
+        accepted_at = parse_timestamp(acknowledgement.get("acceptedAt"), "archived acknowledgement acceptedAt")
+        require(created_at <= accepted_at <= expires_at, "archived acknowledgement is outside the approval window")
+        acknowledged.add(effect)
+    expected_acknowledgements = selected_effects & set(policy.get("consentRequiredEffects", []))
+    require(
+        acknowledged == expected_acknowledgements,
+        "archived acknowledgements differ from consent-required selected route effects",
+    )
 
 
 def validate_archived_plan(root: Path, state: dict | None = None) -> dict:
@@ -1486,13 +2407,7 @@ def validate_archived_plan(root: Path, state: dict | None = None) -> dict:
         require(gate.get("approvalId") == approval.get("approvalId"), "archived gate approval ID mismatch")
         require(gate.get("idempotencyKey") == approval.get("idempotencyKey"), "archived gate idempotency key mismatch")
         require(gate.get("outputPolicy") == approval.get("outputPolicy"), "archived gate output policy mismatch")
-        selected = gate.get("selectedTargets")
-        require(isinstance(selected, list) and selected, "archived gate selected targets are missing")
-        for item in selected:
-            require(isinstance(item, dict) and item.get("targetId") in targets, "archived gate selected target is invalid")
-            target = targets[item["targetId"]]
-            require(item.get("targetSha256") == target["targetSha256"], "archived gate selected target hash mismatch")
-            require(item.get("workflowMode") == target["workflowMode"], "archived gate selected target mode mismatch")
+        validate_archived_gate_authority(report, approval, gate, targets)
 
     if state is not None:
         bindings = state.get("planBindings", {})
@@ -1534,6 +2449,11 @@ def validate_terminal_traceability(root: Path, targets: list[dict]) -> None:
     require(bool(sources.get("sources")), "completed/partial work requires at least one traceable source")
     environment = read_object(root / "shared/environment/environment.json", "environment record")
     require(environment.get("captureStatus") in {"recorded", "partial"}, "completed/partial work requires a captured environment")
+    resources = read_object(root / "shared/execution/resource-usage.json", "resource-usage record")
+    require(
+        resources.get("measurementStatus") in {"recorded", "partial"},
+        "completed/partial work requires recorded or partial resource usage",
+    )
 
 
 def empty_directories(root: Path) -> list[str]:
@@ -1613,7 +2533,7 @@ def validate_manifest(
 
     generator = manifest.get("generator")
     require(
-        generator == {"name": "SciRepro", "component": "finalize_run_bundle.py", "schema": 1},
+        generator == {"name": "SciRepro", "component": "finalize_run_bundle.py", "schema": 2},
         "manifest generator record is invalid",
     )
 
@@ -1637,7 +2557,11 @@ def validate_manifest(
         manifest.get("integrity", {}).get("inventorySha256") == canonical_hash(declared_files),
         "manifest inventory hash mismatch",
     )
-    targets = target_records(root, expected_state.get("targets") if expected_state is not None else None)
+    targets = target_records(
+        root,
+        expected_state.get("targets") if expected_state is not None else None,
+        distribution_class=distribution,
+    )
     validate_terminal_traceability(root, targets)
     require_regular_member(root / "README.md", "README")
     readme = (root / "README.md").read_text(encoding="utf-8")
@@ -1771,6 +2695,7 @@ def finalize_bundle(args: argparse.Namespace) -> Path:
         require(args.result_report is not None, f"{args.status} bundle requires --result-report")
     require(not (root / "report").exists(), "report/ is owned by finalize; provide the Phase 1 web directory with --result-report")
     report_source = None
+    approved_report = archived_approved_report(root)
     if args.result_report is not None:
         report_source = checked_existing_directory(args.result_report, "result-report source")
         require(root not in report_source.parents and report_source != root, "result-report source may not be inside the staging bundle")
@@ -1778,6 +2703,7 @@ def finalize_bundle(args: argparse.Namespace) -> Path:
             report_source,
             expected_report_sha256=report_hash,
             distribution_class=state["distributionClass"],
+            approved_report=approved_report,
         )
     final_path = root.parent / state["bundleId"]
     require(not final_path.exists(), f"final bundle already exists: {final_path}")
@@ -1800,10 +2726,18 @@ def finalize_bundle(args: argparse.Namespace) -> Path:
         finalized_at = now_iso()
         if report_source is not None:
             shutil.copytree(report_source, root / "report/decision", symlinks=False)
+            for directory in sorted(
+                (path for path in (root / "report/decision").rglob("*") if path.is_dir()),
+                key=lambda path: len(path.parts),
+                reverse=True,
+            ):
+                if not any(directory.iterdir()):
+                    directory.rmdir()
             validate_built_decision_report(
                 root / "report/decision",
                 expected_report_sha256=report_hash,
                 distribution_class=state["distributionClass"],
+                approved_report=approved_report,
             )
             summary = make_result_report_summary(
                 root,
@@ -1811,9 +2745,16 @@ def finalize_bundle(args: argparse.Namespace) -> Path:
                 status=args.status,
                 finalized_at=finalized_at,
                 report_sha256=report_hash,
+                distribution_class=state["distributionClass"],
             )
             write_result_report(root, summary)
-        update_readme_status(root, args.status, finalized_at, state["targets"])
+        update_readme_status(
+            root,
+            args.status,
+            finalized_at,
+            state["targets"],
+            state["distributionClass"],
+        )
         state_path.unlink()
         manifest_path = root / "manifest.json"
         if manifest_path.exists():

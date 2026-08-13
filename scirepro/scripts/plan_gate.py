@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 
 from build_report import MAX_ASSET_BYTES
 from build_report import ReportError as ReportValidationError
-from build_report import load_target_manifest, sha256_file, validate_report, validate_sanitized_png
+from build_report import load_target_manifest, require_secret_free, sha256_file, validate_report, validate_sanitized_png
 
 
 class GateError(ValueError):
@@ -92,6 +92,11 @@ def validate_parameter(spec: dict, value: object) -> None:
         require(isinstance(value, str) and safe_relative(value), f"{spec['parameterId']}: unsafe relative path")
     else:
         raise GateError(f"{spec['parameterId']}: unsupported parameter type")
+    if isinstance(value, str):
+        try:
+            require_secret_free(value, f"{spec['parameterId']}: value")
+        except ReportValidationError as exc:
+            raise GateError(str(exc)) from exc
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if "min" in spec:
             require(value >= spec["min"], f"{spec['parameterId']}: below minimum")
@@ -141,6 +146,10 @@ def main() -> int:
         approval = json.loads(args.approval.read_text(encoding="utf-8"))
         require(isinstance(report, dict), "report must be an object")
         require(isinstance(approval, dict), "approval must be an object")
+        try:
+            require_secret_free(approval, "approval")
+        except ReportValidationError as exc:
+            raise GateError(str(exc)) from exc
         schema_version = report.get("schemaVersion")
         require(
             schema_version == "reprofig.report/v3",
@@ -285,6 +294,10 @@ def main() -> int:
                 referenced_requirements.append(requirement)
 
             route_effects = set(route.get("effects", []))
+            require(
+                not route.get("deliverables") or "create-workspace-files" in route_effects,
+                f"{figure_id}: selected route deliverables require create-workspace-files",
+            )
             environments = {item["environmentId"]: item for item in report.get("environment", [])}
             referenced_environments = [
                 environments[environment_id]
@@ -367,6 +380,7 @@ def main() -> int:
                 "targetSha256": target["targetSha256"],
                 "workflowMode": target["workflowMode"],
                 "routeId": selection["routeId"],
+                "parameters": dict(selection["parameters"]),
                 "deliverables": list(selection["deliverables"]),
             })
 

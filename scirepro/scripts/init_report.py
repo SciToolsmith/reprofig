@@ -15,12 +15,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from build_report import ReportError, bind_target_manifest, load_target_manifest, validate_report
+from build_report import (
+    FORMULA_CHECK_STATUSES,
+    FORMULA_CHECK_TYPES,
+    FORMULA_DECISIONS_BY_STATUS,
+    FORMULA_IMPLEMENTATION_DECISIONS,
+    ReportError,
+    bind_target_manifest,
+    load_target_manifest,
+    validate_report,
+)
 
 
 COMPACT_SCHEMA = "scirepro.compact-report/v1"
 TODO_PREFIX = "TODO::"
 CATEGORIES = ("input", "method", "protocol", "validation", "environment")
+COMPACT_FORMULA_INTERPRETATION = {
+    "use-as-stated": "as-stated",
+    "use-derived": "derived",
+    "freeze-assumption": "assumed",
+}
 AUTOMATIC_EFFECTS = {"run-local-code", "create-workspace-files"}
 GATED_EFFECTS = {
     "network", "install", "login", "payment", "upload", "overwrite", "gpu",
@@ -267,7 +281,8 @@ def validate_compact_shape(compact: object, manifest: dict, targets: dict[str, d
 
     figure_keys = {"targetId", "section", "understanding", "generation", "validation", "assessment", "route"}
     understanding_keys = {"visualSummary", "observations", "paperClaim", "evidenceRole", "authorInterpretation", "limitations"}
-    generation_keys = {"inputs", "steps", "plotMapping", "unknowns"}
+    required_generation_keys = {"inputs", "steps", "plotMapping", "unknowns"}
+    generation_keys = required_generation_keys | {"formulaAudit"}
     route_keys = {
         "label", "status", "goal", "claimCoverage", "doesNotReproduce", "substitutions", "assumptions",
         "rationale", "engine", "environmentIds", "conditions", "deliverables", "parameters", "effects",
@@ -276,8 +291,63 @@ def validate_compact_shape(compact: object, manifest: dict, targets: dict[str, d
     for figure in figures:
         exact_keys(figure, figure_keys, f"compact figure {figure.get('targetId')}")
         exact_keys(figure["understanding"], understanding_keys, f"{figure['targetId']} understanding")
-        exact_keys(figure["generation"], generation_keys, f"{figure['targetId']} generation")
+        generation = figure["generation"]
+        require(
+            isinstance(generation, dict)
+            and required_generation_keys <= set(generation) <= generation_keys,
+            f"{figure['targetId']} generation fields are invalid",
+        )
         exact_keys(figure["generation"]["plotMapping"], {"description", "encodings"} | ({"sourceIds"} if "sourceIds" in figure["generation"]["plotMapping"] else set()), f"{figure['targetId']} plotMapping")
+        formula_audit = generation.get("formulaAudit")
+        if formula_audit is not None:
+            exact_keys(
+                formula_audit,
+                {"scope", "included", "excluded", "rationale", "items"},
+                f"{figure['targetId']} formulaAudit",
+            )
+            require(formula_audit["scope"] == "target-chain-only", f"{figure['targetId']} formulaAudit scope must be target-chain-only")
+            for field in ("included", "excluded"):
+                require(
+                    isinstance(formula_audit[field], list)
+                    and all(isinstance(item, str) and item.strip() for item in formula_audit[field]),
+                    f"{figure['targetId']} formulaAudit {field} must contain strings",
+                )
+            require(bool(formula_audit["included"]), f"{figure['targetId']} formulaAudit must include a target dependency")
+            require(isinstance(formula_audit["rationale"], str) and formula_audit["rationale"].strip(), f"{figure['targetId']} formulaAudit rationale is required")
+            require(isinstance(formula_audit["items"], list) and formula_audit["items"], f"{figure['targetId']} formulaAudit items must be non-empty")
+            for index, item in enumerate(formula_audit["items"]):
+                label = f"{figure['targetId']} formulaAudit item {index + 1}"
+                allowed = {
+                    "label", "dependency", "sourceStatement", "checks", "status", "finding",
+                    "implementationDecision", "sourceIds",
+                }
+                required = allowed - {"sourceIds"}
+                require(isinstance(item, dict) and required <= set(item) <= allowed, f"{label} fields are invalid")
+                for field in ("label", "dependency", "sourceStatement", "finding"):
+                    require(isinstance(item[field], str) and item[field].strip(), f"{label} {field} is required")
+                checks = item["checks"]
+                require(
+                    isinstance(checks, list)
+                    and bool(checks)
+                    and all(isinstance(check, str) for check in checks),
+                    f"{label} checks are invalid",
+                )
+                require(
+                    len(checks) == len(set(checks)) and set(checks) <= FORMULA_CHECK_TYPES,
+                    f"{label} checks are invalid",
+                )
+                status = item["status"]
+                decision = item["implementationDecision"]
+                require(status in FORMULA_CHECK_STATUSES, f"{label} has an invalid status")
+                require(decision in FORMULA_IMPLEMENTATION_DECISIONS, f"{label} has an invalid implementation decision")
+                require(
+                    decision in FORMULA_DECISIONS_BY_STATUS[status],
+                    f"{label}: {status} cannot use implementation decision {decision}",
+                )
+                require(
+                    decision != "split-routes",
+                    f"{label}: split-routes requires authoring the full reprofig.report/v3 contract with at least two explicit routeBindings",
+                )
         exact_keys(figure["assessment"], {"level", "verdict", "confidence", "rationale"}, f"{figure['targetId']} assessment")
         require(isinstance(figure["assessment"]["level"], str), f"{figure['targetId']} assessment level must be a string")
         route = exact_keys(figure["route"], route_keys, f"{figure['targetId']} route")
@@ -390,6 +460,44 @@ def expand_figure(authored: dict, target: dict, manifest_path: Path, base_id: st
     recommended = route["status"] != "blocked"
     requested_ref = target.get("requestedAs") or target.get("figureReference")
     caption = target.get("caption") or target.get("sourceFileName") or requested_ref or target_id
+    generation_logic = {
+        "inputs": expanded_items(authored["generation"]["inputs"], "input"),
+        "steps": expanded_items(authored["generation"]["steps"], "step"),
+        "plotMapping": {
+            "description": plot["description"],
+            "encodings": plot["encodings"],
+            "evidenceRefs": plot_refs,
+        },
+        "unknowns": authored["generation"]["unknowns"],
+    }
+    authored_formula_audit = authored["generation"].get("formulaAudit")
+    if authored_formula_audit is not None:
+        formula_items = []
+        for index, item in enumerate(authored_formula_audit["items"]):
+            refs = optional_refs(item, base_id)
+            used_refs.update(refs)
+            formula_items.append(
+                {
+                    "checkId": stable_id("formula", f"{token}-{index + 1}"),
+                    **{key: value for key, value in item.items() if key != "sourceIds"},
+                    "routeBindings": (
+                        []
+                        if item["implementationDecision"] == "block"
+                        else [
+                            {
+                                "routeId": route_id,
+                                "interpretation": COMPACT_FORMULA_INTERPRETATION[item["implementationDecision"]],
+                            }
+                        ]
+                    ),
+                    "evidenceRefs": refs,
+                }
+            )
+        generation_logic["formulaAudit"] = {
+            **{key: value for key, value in authored_formula_audit.items() if key != "items"},
+            "items": formula_items,
+        }
+
     return {
         "figureId": figure_id,
         "label": target.get("figureReference") or requested_ref or target_id,
@@ -402,16 +510,7 @@ def expand_figure(authored: dict, target: dict, manifest_path: Path, base_id: st
             **{key: value for key, value in authored["understanding"].items() if key != "observations"},
             "observations": observations,
         },
-        "generationLogic": {
-            "inputs": expanded_items(authored["generation"]["inputs"], "input"),
-            "steps": expanded_items(authored["generation"]["steps"], "step"),
-            "plotMapping": {
-                "description": plot["description"],
-                "encodings": plot["encodings"],
-                "evidenceRefs": plot_refs,
-            },
-            "unknowns": authored["generation"]["unknowns"],
-        },
+        "generationLogic": generation_logic,
         "validationTargets": validation,
         "reproduction": {
             "level": authored["assessment"]["level"],

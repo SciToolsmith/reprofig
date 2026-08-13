@@ -1,4 +1,4 @@
 interface:
   display_name: "SciRepro"
   short_description: "研判科研图件复现路线，并交付可验证、可追溯的复现结果"
-  default_prompt: "Use $scirepro to acquire or verify my target figures, choose the smallest sufficient assessment depth, show them in a local reproduction decision report, and wait for my scope-bound approval before reproduction."
+  default_prompt: "Use $scirepro to verify my target figures, trace only the target-dependent research chain, investigate decision-changing gaps, and show the proposed route in a local report before reproduction."

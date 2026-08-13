@@ -42,6 +42,314 @@ class ReportBuilderTests(unittest.TestCase):
             capture_output=True,
         )
 
+    @staticmethod
+    def add_formula_audit(report: dict) -> dict:
+        report["figures"][0]["generationLogic"]["formulaAudit"] = {
+            "scope": "target-chain-only",
+            "included": ["Visible-coordinate transform"],
+            "excluded": ["Unrelated theory"],
+            "rationale": "The transform directly determines the reconstructed target geometry.",
+            "items": [
+                {
+                    "checkId": "formula-coordinate-transform",
+                    "label": "Coordinate transform",
+                    "dependency": "Maps target pixels to the reconstructed output coordinates.",
+                    "sourceStatement": "The bounded transform used by the reconstruction route.",
+                    "checks": ["derivation", "dimensions", "boundary-cases", "figure-trend"],
+                    "status": "derived",
+                    "finding": "The transform is dimensionally consistent and preserves the visible ordering.",
+                    "implementationDecision": "use-derived",
+                    "routeBindings": [{"routeId": "route-local", "interpretation": "derived"}],
+                    "evidenceRefs": ["src-target"],
+                }
+            ],
+        }
+        return report
+
+    def test_target_scoped_formula_audit_is_validated_and_rendered(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, _ = create_target_workspace(root / "targets")
+            report_input = create_report_input(root / "report-input.json")
+            report = self.add_formula_audit(json.loads(report_input.read_text(encoding="utf-8")))
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+            completed = self.run_builder(root, report_input, target_manifest)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            built = json.loads((root / "report" / "report.json").read_text(encoding="utf-8"))
+            audit = built["figures"][0]["generationLogic"]["formulaAudit"]
+            self.assertEqual(audit["scope"], "target-chain-only")
+            self.assertEqual(audit["items"][0]["implementationDecision"], "use-derived")
+            self.assertEqual(
+                audit["items"][0]["routeBindings"],
+                [{"routeId": "route-local", "interpretation": "derived"}],
+            )
+            app = (root / "report" / "app.js").read_text(encoding="utf-8")
+            self.assertIn("相关公式、参数与假设核验", app)
+            self.assertIn("绑定路线", app)
+            self.assertIn("privateKeyMarker", app)
+            self.assertIn("secretAssignment", app)
+
+    def test_report_rejects_credential_shaped_prose_before_persistence(self) -> None:
+        credential_samples = (
+            "Authorization: Bearer abcdefghijklmnop",
+            "api_key=sk-example-credential",
+            "OPENAI_API_KEY=sk-example-provider-credential",
+            "AWS_SECRET_ACCESS_KEY=example-aws-credential",
+            "-----BEGIN PRIVATE KEY-----\nnot-a-real-key",
+        )
+        for index, sample in enumerate(credential_samples):
+            with self.subTest(sample=sample), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                target_manifest, _ = create_target_workspace(root / "targets")
+                report_input = create_report_input(root / "report-input.json")
+                report = json.loads(report_input.read_text(encoding="utf-8"))
+                report["sources"][0]["note"] = f"Checked source. {sample}"
+                report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+                completed = self.run_builder(root, report_input, target_manifest, output_name=f"report-{index}")
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn("possible credential material", completed.stderr)
+                self.assertNotIn("sk-example-credential", completed.stderr)
+                self.assertFalse((root / f"report-{index}" / "report.json").exists())
+
+    def test_parameter_default_rejects_secret_but_benign_scientific_prose_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, _ = create_target_workspace(root / "targets")
+            report_input = create_report_input(root / "report-input.json")
+            report = json.loads(report_input.read_text(encoding="utf-8"))
+            route = report["figures"][0]["routes"][0]
+            route["parameters"] = [{
+                "parameterId": "token_count_note",
+                "label": "Method note",
+                "type": "string",
+                "required": False,
+                "default": "The token count is a scientific observable; authorization is discussed conceptually.",
+                "origin": "paper",
+            }]
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            benign = self.run_builder(root, report_input, target_manifest, output_name="benign-report")
+            self.assertEqual(benign.returncode, 0, benign.stderr)
+            built = json.loads((root / "benign-report" / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                built["figures"][0]["routes"][0]["parameters"][0]["parameterId"],
+                "token_count_note",
+            )
+            self.assertIn(
+                "authorization is discussed conceptually",
+                built["figures"][0]["routes"][0]["parameters"][0]["default"],
+            )
+
+            route["parameters"][0]["default"] = "password=hunter-example"
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            secret = self.run_builder(root, report_input, target_manifest, output_name="secret-report")
+            self.assertNotEqual(secret.returncode, 0)
+            self.assertIn("possible credential material", secret.stderr)
+
+    def test_nonblocked_deliverables_require_workspace_file_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, _ = create_target_workspace(root / "targets")
+            report_input = create_report_input(root / "report-input.json")
+            report = json.loads(report_input.read_text(encoding="utf-8"))
+            report["figures"][0]["routes"][0]["effects"].remove("create-workspace-files")
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+            completed = self.run_builder(root, report_input, target_manifest)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("deliverables must declare create-workspace-files", completed.stderr)
+
+    def test_formula_divergence_cannot_be_silently_used_as_stated(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, _ = create_target_workspace(root / "targets")
+            report_input = create_report_input(root / "report-input.json")
+            report = self.add_formula_audit(json.loads(report_input.read_text(encoding="utf-8")))
+            item = report["figures"][0]["generationLogic"]["formulaAudit"]["items"][0]
+            item["status"] = "paper-code-divergence"
+            item["implementationDecision"] = "use-as-stated"
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+            completed = self.run_builder(root, report_input, target_manifest)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("paper-code-divergence cannot use implementation decision use-as-stated", completed.stderr)
+
+    def test_ambiguous_formula_cannot_be_silently_used_as_stated(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, _ = create_target_workspace(root / "targets")
+            report_input = create_report_input(root / "report-input.json")
+            report = self.add_formula_audit(json.loads(report_input.read_text(encoding="utf-8")))
+            item = report["figures"][0]["generationLogic"]["formulaAudit"]["items"][0]
+            item["status"] = "ambiguous"
+            item["implementationDecision"] = "use-as-stated"
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+            completed = self.run_builder(root, report_input, target_manifest)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("ambiguous cannot use implementation decision use-as-stated", completed.stderr)
+
+    def test_formula_divergence_split_decision_requires_distinct_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, _ = create_target_workspace(root / "targets")
+            report_input = create_report_input(root / "report-input.json")
+            report = self.add_formula_audit(json.loads(report_input.read_text(encoding="utf-8")))
+            item = report["figures"][0]["generationLogic"]["formulaAudit"]["items"][0]
+            item["status"] = "paper-code-divergence"
+            item["implementationDecision"] = "split-routes"
+            item["routeBindings"] = [
+                {"routeId": "route-local", "interpretation": "paper-formula"},
+                {"routeId": "route-local", "interpretation": "code-implementation"},
+            ]
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+            completed = self.run_builder(root, report_input, target_manifest)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("routeBindings must not repeat a routeId", completed.stderr)
+
+    def test_formula_split_requires_two_interpretation_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, _ = create_target_workspace(root / "targets")
+            report_input = create_report_input(root / "report-input.json")
+            report = self.add_formula_audit(json.loads(report_input.read_text(encoding="utf-8")))
+            item = report["figures"][0]["generationLogic"]["formulaAudit"]["items"][0]
+            item.update(
+                {
+                    "status": "ambiguous",
+                    "implementationDecision": "split-routes",
+                    "routeBindings": [
+                        {"routeId": "route-local", "interpretation": "alternative-derived"},
+                        {"routeId": "route-other", "interpretation": "alternative-derived"},
+                    ],
+                }
+            )
+            other = json.loads(json.dumps(report["figures"][0]["routes"][0]))
+            other["routeId"] = "route-other"
+            other["label"] = "Alternative route"
+            other["recommended"] = False
+            other["scientificScope"]["assumptions"] = ["Alternative target-scoped interpretation."]
+            report["figures"][0]["routes"].append(other)
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+            completed = self.run_builder(root, report_input, target_manifest)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("requires distinct route interpretations", completed.stderr)
+
+    def test_formula_split_rejects_unknown_or_cloned_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, _ = create_target_workspace(root / "targets")
+            report_input = create_report_input(root / "report-input.json")
+            report = self.add_formula_audit(json.loads(report_input.read_text(encoding="utf-8")))
+            item = report["figures"][0]["generationLogic"]["formulaAudit"]["items"][0]
+            item.update(
+                {
+                    "status": "paper-code-divergence",
+                    "implementationDecision": "split-routes",
+                    "routeBindings": [
+                        {"routeId": "route-local", "interpretation": "paper-formula"},
+                        {"routeId": "route-unrelated", "interpretation": "code-implementation"},
+                    ],
+                }
+            )
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            unknown = self.run_builder(root, report_input, target_manifest)
+            self.assertNotEqual(unknown.returncode, 0)
+            self.assertIn("must resolve to routes in the same figure", unknown.stderr)
+
+            clone = json.loads(json.dumps(report["figures"][0]["routes"][0]))
+            clone["routeId"] = "route-unrelated"
+            clone["label"] = "Renamed duplicate route"
+            clone["recommended"] = False
+            report["figures"][0]["routes"].append(clone)
+            item["routeBindings"][1]["interpretation"] = "alternative-derived"
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            wrong_roles = self.run_builder(root, report_input, target_manifest, output_name="wrong-roles-report")
+            self.assertNotEqual(wrong_roles.returncode, 0)
+            self.assertIn("requires paper-formula and code-implementation bindings", wrong_roles.stderr)
+
+            item["routeBindings"][1]["interpretation"] = "code-implementation"
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            cloned = self.run_builder(root, report_input, target_manifest, output_name="cloned-report")
+            self.assertNotEqual(cloned.returncode, 0)
+            self.assertIn("scientifically distinct route definitions", cloned.stderr)
+
+    def test_paper_code_split_accepts_structured_distinct_interpretations(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, _ = create_target_workspace(root / "targets")
+            report_input = create_report_input(root / "report-input.json")
+            report = self.add_formula_audit(json.loads(report_input.read_text(encoding="utf-8")))
+            item = report["figures"][0]["generationLogic"]["formulaAudit"]["items"][0]
+            item.update(
+                {
+                    "status": "paper-code-divergence",
+                    "implementationDecision": "split-routes",
+                    "routeBindings": [
+                        {"routeId": "route-local", "interpretation": "paper-formula"},
+                        {"routeId": "route-code", "interpretation": "code-implementation"},
+                    ],
+                }
+            )
+            code_route = json.loads(json.dumps(report["figures"][0]["routes"][0]))
+            code_route["routeId"] = "route-code"
+            code_route["label"] = "Code implementation route"
+            code_route["recommended"] = False
+            code_route["scientificScope"]["assumptions"] = ["Use the implementation ordering found in code."]
+            code_route["plan"] = ["Execute the code-ordering interpretation and validate its visible result."]
+            report["figures"][0]["routes"].append(code_route)
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+            completed = self.run_builder(root, report_input, target_manifest)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            built = json.loads((root / "report" / "report.json").read_text(encoding="utf-8"))
+            bindings = built["figures"][0]["generationLogic"]["formulaAudit"]["items"][0]["routeBindings"]
+            self.assertEqual({binding["interpretation"] for binding in bindings}, {"paper-formula", "code-implementation"})
+
+    def test_formula_block_binding_matches_blocked_route_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target_manifest, _ = create_target_workspace(root / "targets")
+            report_input = create_report_input(root / "report-input.json")
+            report = self.add_formula_audit(json.loads(report_input.read_text(encoding="utf-8")))
+            item = report["figures"][0]["generationLogic"]["formulaAudit"]["items"][0]
+            item.update(
+                {
+                    "status": "not-checkable",
+                    "implementationDecision": "block",
+                    "routeBindings": [{"routeId": "route-local", "interpretation": "derived"}],
+                }
+            )
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            bound_ready = self.run_builder(root, report_input, target_manifest)
+            self.assertNotEqual(bound_ready.returncode, 0)
+            self.assertIn("block may bind only blocked routes", bound_ready.stderr)
+
+            item["routeBindings"] = []
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            unbound_ready = self.run_builder(root, report_input, target_manifest, output_name="unbound-ready")
+            self.assertNotEqual(unbound_ready.returncode, 0)
+            self.assertIn("unbound block requires every figure route to be blocked", unbound_ready.stderr)
+
+            figure = report["figures"][0]
+            route = figure["routes"][0]
+            route.update(
+                {
+                    "status": "blocked",
+                    "recommended": False,
+                    "deliverables": [],
+                    "plan": [],
+                    "blockers": ["The target-chain expression cannot currently be checked."],
+                }
+            )
+            figure["reproduction"]["recommendedRouteId"] = None
+            report_input.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            blocked = self.run_builder(root, report_input, target_manifest, output_name="blocked")
+            self.assertEqual(blocked.returncode, 0, blocked.stderr)
+
     def test_ready_route_accepts_only_a_resolved_derivation_or_assumption(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

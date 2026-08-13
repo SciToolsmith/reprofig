@@ -16,13 +16,13 @@ description: Analyze, assess, and reproduce one or many scientific figures throu
 - For an actual reproduction request, show a local decision report before execution. The report must display every target admitted to assessment.
 - Prefer compatible existing environments. Create only project-local open-source environments within budget; never silently install proprietary software, accept terms, log in, purchase access, upload private artifacts, or contact third parties.
 
-## Choose the smallest sufficient workflow
+## Unified workflow and stopping rule
 
-1. **Explain or assess** — answer a read-only question about meaning, generation logic, missing evidence, or likely feasibility. Materialize targets only when identity must be stabilized. Do not invent an approval ceremony or execute a reproduction.
-2. **Compact local report** — use for an actual reproduction with verified targets, one clear low-risk route, bounded local R0/R1 effects, and no unresolved access, license, privacy, proprietary-runtime, or large-resource issue. Keep evidence and alternatives concise; export a scope-bound approval receipt before execution.
-3. **Full audited report** — use when source retrieval or installation is needed, routes compete, evidence is uncertain, a target is blocked, or any R2/R3 action, proprietary tool, large resource, private artifact, publication, or redistribution is involved. Use the full investigation and approval fields.
+For a read-only request about meaning, generation logic, missing evidence, or likely feasibility, answer directly. Materialize targets only when their identity must be stabilized; do not invent an approval ceremony or execute a reproduction.
 
-Do not lower scientific standards in a compact report; lower only ceremony and irrelevant detail. A user request to “start now” does not bypass report-first execution, but a compact report may require only one short confirmation or exported receipt.
+For every actual reproduction or output-producing request, follow one path: verify targets → understand their evidence role → reconstruct the target-dependent generation chain → form the minimum useful route → investigate only decision-changing unknowns → build the local target-displaying report → obtain scope-bound approval → execute and validate → finalize one run bundle. A request to “start now” does not bypass Phase 0, the local report, or approval.
+
+Apply **minimum sufficient investigation**. Start from the most defensible route and investigate an unknown only when resolving it can change at least one of: route feasibility, supported scientific claim or boundary, material cost/resources, or required permission/risk. Stop expanding the investigation when either a route can test the stated objective at its declared reproduction level with explicit assumptions and acceptance criteria, or every defensible route is blocked with concrete blockers and next actions. Do not keep searching for background completeness, inventory unrelated environments, or add alternatives that would not change the decision.
 
 ## Phase 0 — Acquire and verify targets
 
@@ -53,9 +53,11 @@ Track two independent axes:
 
 A transparent derivation or explicitly frozen defensible assumption can be execution-ready while remaining less certain than verified evidence. Missing original-case evidence may block `direct-recompute` while leaving a mechanism or alternative route ready. State what every route can and cannot support.
 
+Treat published equations and parameters as candidate specifications, not automatically correct facts. Independently derive or check only the expressions, values, units, dimensions, indices, assumptions, and boundary conditions that the target's generation chain or acceptance criteria directly depend on. Cross-check those items against definitions, code, cited sources, and the target's axes, scale, and observable behavior. Do not derive or audit unrelated formulas elsewhere in the paper. Record ambiguities, suspected errors, corrections, and code–paper differences explicitly; never silently repair them.
+
 ## Phase 1 — Build the decision report
 
-For a compact report, run `scripts/init_report.py init` to create `scirepro.compact-report/v1`, replace every `TODO::` value from evidence, run `validate-ready`, then use `expand` to create the complete v3 input for `build_report.py`. Read [report-scaffold.md](references/report-scaffold.md) only when using this helper. The scaffold reduces structural repetition but never supplies scientific conclusions.
+Use `scripts/init_report.py init` when its one-route-per-target authoring scaffold fits the minimum useful routes. It creates the compatibility schema `scirepro.compact-report/v1`; replace every `TODO::` value from evidence, run `validate-ready`, then use `expand` to create the complete v3 input for `build_report.py`. Author v3 directly only when materially different routes require representation. Read [report-scaffold.md](references/report-scaffold.md) only when using the helper. This is an authoring optimization; it does not change the workflow or evidence standard and never supplies scientific conclusions.
 
 For each admitted target:
 
@@ -65,13 +67,15 @@ For each admitted target:
 4. Audit only sources, data, runtimes, packages/toolboxes, licenses, and hardware required to decide those routes. Do not inventory the machine or web broadly.
 5. Write `scirepro-report.json`, build the local static report with the verified-subset target manifest, inspect it visually, present its location, and stop for approval. If the product browser refuses `file://`, serve only that report directory on a temporary `127.0.0.1` listener and stop it after QA.
 
+At each step, stop investigating a question once its answer can no longer change route feasibility, scientific scope, material cost, or permission. An unresolved but decision-neutral detail belongs in limitations, not in another search cycle.
+
 Keep the report decision-dense:
 
 - Default to one minimum useful route per target; add another only when its scientific scope, evidence level, or validation claim materially differs.
 - Default to 1–3 observations and 1–3 validation targets per figure. Add more only when distinct panels or claims require them.
 - Keep each prose field to 1–3 sentences. Reference shared sources and environments by ID instead of retelling them, and state the same gap only once.
 - For multiple targets, record shared paper, code, data, and environment evidence once, then reuse references. Do not paste raw paper text, source files, logs, or search transcripts into the report.
-- Preserve every required scientific field; compactness removes repetition and irrelevant alternatives, not evidence, boundaries, or acceptance criteria.
+- Preserve every required scientific field; concision removes repetition and irrelevant alternatives, not evidence, boundaries, or acceptance criteria.
 
 Read [investigation-schema.md](references/investigation-schema.md) only while authoring or validating report JSON. Read [source-environment-audit.md](references/source-environment-audit.md) only when a route depends on external code/data or uncertain local capability. Read [web-report-contract.md](references/web-report-contract.md) only while building or checking the web report.
 
@@ -88,7 +92,7 @@ Display verified target images directly. Put unresolved target IDs and exclusion
 
 Read [permission-gates.md](references/permission-gates.md) before any download, installation, code execution, external effect, or Phase 2 run. Apply the default bounded R1 budget unless the user supplied another one; ask before R2/R3 and block R4.
 
-A compact approval receipt still binds report and manifest hashes, target/route IDs, target hashes, accepted assumptions, modes/levels, budget, effects, and output policy. A full audited report uses the detailed approval draft. Validate either with:
+The approval receipt binds report and manifest hashes, target/route IDs, target hashes, accepted assumptions, modes/levels, budget, effects, and output policy. Validate it with:
 
 ```bash
 python <skill-root>/scripts/plan_gate.py --report report/report.json \
@@ -104,8 +108,9 @@ Read [execution-validation.md](references/execution-validation.md) only after ap
 1. Freeze target, report, approval, source, environment, input, and validation hashes; claim the idempotency key.
 2. Work in a versioned run directory and preserve originals read-only. Execute only approved targets, one target at a time; one failure must not corrupt completed targets.
 3. Trace implementation to declared generation links. Stop for renewed approval only on a material substitution or newly gated effect.
-4. Smoke test, run, export, and validate against predefined scientific or image-derived criteria. Keep compatibility fixes documented and semantic changes separately approved.
-5. Finalize exactly one run-bundle directory with status, per-target outputs and validation, reusable code/configuration, environment, commands, resource use, provenance, licenses, assumptions, and patches. A `complete` or `partial` reproduction must include an updated local result report; a `failed`, `blocked`, or `cancelled` diagnostic bundle may omit it. Restricted resources are referenced, not redistributed.
+4. Smoke test, run, export, and validate against predefined scientific or image-derived criteria. Preserve an untuned V0, compare scientific discrepancies separately from presentation defects, and follow [execution-validation.md](references/execution-validation.md) for bounded calibration: at most one evidence-based scientific correction and one presentation/visual-quality repair by default, stopping as soon as the declared criteria are met. A third round or later requires a new testable scientific hypothesis and explicit approval for that round.
+5. Preserve valid negative results. Reproduction failure alone is not evidence of misconduct; escalate only an independently repeatable anomaly that remains unexplained after relevant ordinary differences are tested. Use neutral language, never allege intent, and do not contact authors, journals, or other third parties without separate authorization.
+6. Finalize exactly one run-bundle directory with status, per-target outputs and validation, reusable code/configuration, environment, commands, resource use, provenance, licenses, assumptions, and patches. A `complete` or `partial` reproduction must include an updated local result report; a `failed`, `blocked`, or `cancelled` diagnostic bundle may omit it. Restricted resources are referenced, not redistributed.
 
 Report execution status, validation status, and scientific-claim status separately. Preserve diagnostic manifests and logs even for partial, failed, blocked, or cancelled runs.
 

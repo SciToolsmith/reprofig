@@ -19,7 +19,7 @@ Allowed in a dedicated workspace and inside the approved/default budget:
 - run reviewed, bounded smoke tests with no network after setup;
 - create the local report, approval receipt, and create-only outputs.
 
-R1 never authorizes a global install, overwrite, unrestricted network execution, proprietary installation, or unapproved full reproduction. A compact single-route report may summarize R0/R1 effects in one receipt rather than repeat a long decision card.
+R1 never authorizes a global install, overwrite, unrestricted network execution, proprietary installation, or an unapproved reproduction run. Summarize bounded R0/R1 effects once in the approval receipt instead of repeating them in multiple decision cards.
 
 ## R2 — explicit confirmation
 
@@ -30,6 +30,8 @@ R1 never authorizes a global install, overwrite, unrestricted network execution,
 - overwrite of an existing output.
 
 State the proposed action, source, size/runtime/cost, risk, rollback, affected targets and generation links, and what claim remains testable. Do not burden the user with irrelevant fields when these facts fit in a concise decision card.
+
+Investigate permission and resource details only far enough to determine whether the proposed route remains inside R1 or needs an R2/R3 decision. Do not audit unrelated actions merely because they could exist in another route.
 
 ## R3 — user-held authority and itemized approval
 
@@ -44,6 +46,7 @@ The user performs authentication through the official path. Never request passwo
 
 - bypassing paywalls, DRM, CAPTCHA, access controls, licenses, or DUA;
 - unauthorized credentials or disclosure of sensitive, confidential, clinical, personal, or unpublished data;
+- credential material in report prose or parameter values. Reject secret assignments, bearer/basic authorization values, and private-key blocks before report persistence and again at approval validation; store a credential-reference label only;
 - privileged execution of untrusted code or destructive/broad deletion;
 - fabricated data, concealed assumptions, or claims that visual similarity proves scientific reproduction.
 

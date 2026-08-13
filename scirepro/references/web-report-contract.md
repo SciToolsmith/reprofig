@@ -13,9 +13,10 @@ The report must help the researcher:
 2. read what is visibly present in each target;
 3. understand the paper claim and evidentiary role when paper evidence exists;
 4. inspect the inferred data-to-figure generation chain and its unknowns;
-5. see explicit validation targets;
-6. compare reproduction routes by scientific scope, substitutions, assumptions, and limitations;
-7. review execution conditions and export a target-bound route selection for approval.
+5. inspect any target-relevant formula or parameter checks without expanding into a paper-wide audit;
+6. see explicit validation targets;
+7. compare reproduction routes by scientific scope, substitutions, assumptions, and limitations;
+8. review execution conditions and export a target-bound route selection for approval.
 
 The page must not run research code, install software, fetch remote scripts, or grant authority by itself. Approval is an execution safeguard at the end of the report, not the report's organizing concept.
 
@@ -64,6 +65,8 @@ The builder accepts only non-symlinked normalized PNG targets inside the approve
 - In `scientific-reproduction`, require a paper plus non-null paper claim, evidence role, and author interpretation.
 - In `image-derived-reconstruction`, permit a null paper root and require null paper claim and author interpretation. State that visual matching or digitization does not establish the original scientific process.
 - Render every generation input and step with its origin and evidence references.
+- When `generationLogic.formulaAudit` exists, render its target-chain boundary, included and explicitly excluded dependencies, checks, finding, implementation decision, and each structured interpretation role with its bound route label beside the generation chain. An unbound block means every candidate is blocked. Do not imply that unchecked paper equations were verified.
+- Show paper/code divergence as split routes or a blocker; never let the browser visually collapse it into a silent implementation choice.
 - Render verified environment evidence only from a hashed `environment-audit` artifact; do not let a generic paper or documentation link visually stand in for a live capability probe.
 - Show validation targets, origin, and evidence basis before the reproduction assessment so success is defined explicitly rather than inferred from appearance or runtime.
 - Explain what each route does **not** reproduce. A runnable environment is not necessarily the scientifically strongest route.
@@ -89,8 +92,8 @@ The builder accepts only non-symlinked normalized PNG targets inside the approve
 - Use `textContent`; never use `innerHTML`, `eval`, remote scripts, remote fonts, or service workers.
 - Permit only credential-free HTTPS links to public hosts; reject URL fragments and sensitive signed/query parameters, and add `noopener noreferrer`.
 - Keep all bundled paths relative. Reject schemes, Windows drive/UNC paths, control characters, encoded traversal, absolute paths, `..`, and symlink escapes.
-- Recursively redact input-only paths, command output, credentials, and private evidence before writing `report.json` or `report-data.js`.
-- Do not store secrets. Store only credential reference labels.
+- Recursively redact input-only paths, command output, and private evidence before writing `report.json` or `report-data.js`. Reject credential-shaped prose or parameter defaults before persistence, including secret assignments, `Authorization: Bearer/Basic` values, private-key blocks, and well-known secret prefixes. Apply the same narrow check to values entered in the approval form; ordinary scientific uses of words such as “token count” or “authorization procedure” remain valid.
+- Do not store secrets. Store only credential reference labels; never the referenced credential value.
 - Default to `overwrite: never`.
 - Keep the report usable from `file://` without a server. When a browser security policy refuses local-file navigation, serve only the report directory from a temporary loopback listener bound to `127.0.0.1`; never bind the preview publicly, and stop it after visual QA.
 
@@ -120,6 +123,7 @@ The `reprofig.report/v3` JSON is the source of truth. The `reprofig.*` prefix is
 - Confirm target and report-asset hashes are recorded and validated independently.
 - Confirm every scientific target has paper fields, while image-derived targets do not fabricate paper claims or author interpretation.
 - Confirm every figure has direct observations, an evidence-linked generation chain, and at least one validation target.
+- Confirm every declared formula audit is limited to the target chain, has resolved evidence, uses a legal status-to-decision pairing, binds valid same-figure routes, and displays those route bindings; do not add an audit card merely to fill a template.
 - Confirm every route states its scope, claim coverage or reconstruction boundary, exclusions, assumptions or substitutions, validation targets, blockers, and deliverables as applicable.
 - Confirm every recommended route and evidence reference resolves.
 - Confirm selector cards remain fixed-size, scroll horizontally, and activate only one detail view.

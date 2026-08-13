@@ -173,6 +173,7 @@ class InitReportTests(unittest.TestCase):
             self.assertEqual(len(compact["figures"]), 1)
             figure = compact["figures"][0]
             self.assertEqual(set(figure["route"]["conditions"]), {"input", "method", "protocol", "validation", "environment"})
+            self.assertNotIn("formulaAudit", figure["generation"])
             self.assertNotIn("figureId", figure)
             self.assertNotIn("target", figure)
             self.assertNotIn("requirementId", json.dumps(figure))
@@ -285,6 +286,79 @@ class InitReportTests(unittest.TestCase):
             ready = run_scaffold("validate-ready", "--input", compact_path, "--target-manifest", manifest)
             self.assertEqual(ready.returncode, 0, ready.stderr)
             self.assertEqual(json.loads(ready.stdout)["status"], "ready")
+
+    def test_compact_formula_audit_expands_deterministically_to_its_single_route(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest, _ = create_target_workspace(root / "targets")
+            compact_path = root / "compact-formula.json"
+            expanded_path = root / "expanded-formula.json"
+            self.assertEqual(run_scaffold("init", "--target-manifest", manifest, "--output", compact_path).returncode, 0)
+            compact = json.loads(compact_path.read_text(encoding="utf-8"))
+            make_ready_image_compact(compact)
+            compact["figures"][0]["generation"]["formulaAudit"] = {
+                "scope": "target-chain-only",
+                "included": ["Visible-coordinate transform"],
+                "excluded": ["Unrelated equations"],
+                "rationale": "The transform directly controls the target geometry.",
+                "items": [
+                    {
+                        "label": "Coordinate transform",
+                        "dependency": "Maps target pixels to output coordinates.",
+                        "sourceStatement": "The transform reconstructed from the target.",
+                        "checks": ["derivation", "dimensions", "boundary-cases"],
+                        "status": "derived",
+                        "finding": "The bounded transform is dimensionally consistent.",
+                        "implementationDecision": "use-derived",
+                    }
+                ],
+            }
+            write_json(compact_path, compact)
+
+            result = run_scaffold(
+                "expand", "--input", compact_path, "--target-manifest", manifest, "--output", expanded_path
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expanded = json.loads(expanded_path.read_text(encoding="utf-8"))
+            figure = expanded["figures"][0]
+            formula_item = figure["generationLogic"]["formulaAudit"]["items"][0]
+            self.assertEqual(
+                formula_item["routeBindings"],
+                [{"routeId": figure["routes"][0]["routeId"], "interpretation": "derived"}],
+            )
+            self.assertTrue(formula_item["checkId"].startswith("formula-"))
+
+    def test_compact_split_formula_requires_full_v3_authoring(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest, _ = create_target_workspace(root / "targets")
+            compact_path = root / "compact-split.json"
+            self.assertEqual(run_scaffold("init", "--target-manifest", manifest, "--output", compact_path).returncode, 0)
+            compact = json.loads(compact_path.read_text(encoding="utf-8"))
+            make_ready_image_compact(compact)
+            compact["figures"][0]["generation"]["formulaAudit"] = {
+                "scope": "target-chain-only",
+                "included": ["Paper/code update rule"],
+                "excluded": [],
+                "rationale": "The divergent update controls the plotted output.",
+                "items": [
+                    {
+                        "label": "Update rule",
+                        "dependency": "Computes the plotted response.",
+                        "sourceStatement": "Paper and code order operations differently.",
+                        "checks": ["code-cross-check"],
+                        "status": "paper-code-divergence",
+                        "finding": "The two implementations are materially different.",
+                        "implementationDecision": "split-routes",
+                    }
+                ],
+            }
+            write_json(compact_path, compact)
+
+            result = run_scaffold("validate-ready", "--input", compact_path, "--target-manifest", manifest)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("full reprofig.report/v3", result.stderr)
+            self.assertIn("explicit routeBindings", result.stderr)
 
     def test_unfinished_compact_cannot_enter_report_builder(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
