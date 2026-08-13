@@ -2,6 +2,10 @@
 
 Use this reference only when an action can change local or external state. Score each action independently; the effective level is the highest across access, cost, privacy, security, system mutation, external effect, and scientific impact.
 
+## Pinned companion bootstrap exception
+
+The terminal schematic router has one standing exception before SciRepro Phase 0: when `sci-diagram-pptx` is absent, `ensure_diagram_companion.py` may install exactly the public, commit-pinned companion named in [diagram-handoff.md](diagram-handoff.md) into the user-level Codex skills directory without asking. It must use anonymous download, create only the missing destination, validate the installed identity, and record the source and commit. It must not overwrite, use credentials, install a runtime or system dependency, or authorize any SciDiagram execution effect. Any conflict or failure stops the handoff and SciRepro; this exception never generalizes to other skills or packages.
+
 ## R0 — automatic read-only
 
 - read supplied artifacts and local source text;
@@ -19,7 +23,7 @@ Allowed in a dedicated workspace and inside the approved/default budget:
 - run reviewed, bounded smoke tests with no network after setup;
 - create the local report, approval receipt, and create-only outputs.
 
-R1 never authorizes a global install, overwrite, unrestricted network execution, proprietary installation, or an unapproved reproduction run. Summarize bounded R0/R1 effects once in the approval receipt instead of repeating them in multiple decision cards.
+Apart from the single pinned companion bootstrap above, R1 never authorizes a global or user-level skill install, overwrite, unrestricted network execution, proprietary installation, or an unapproved reproduction run. Summarize bounded R0/R1 effects once in the approval receipt instead of repeating them in multiple decision cards.
 
 ## R2 — explicit confirmation
 

@@ -1,5 +1,7 @@
 # Target figure acquisition
 
+This Phase 0 contract applies only after the terminal diagram router retains a target in SciRepro. For a semantic schematic handed to `sci-diagram-pptx`, follow [diagram-handoff.md](diagram-handoff.md) and acquire only the readable crop and source context needed by the receiving skill; do not create a SciRepro target workspace or manifest.
+
 Phase 0 gives every requested object a stable target ID, normalized image, hash, provenance, and review state before scientific assessment. All entry paths accept one or many targets.
 
 ## Three entry paths

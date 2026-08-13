@@ -48,6 +48,7 @@ class RepositoryContractTests(unittest.TestCase):
             "permission-gates.md",
             "execution-validation.md",
             "run-bundle-contract.md",
+            "diagram-handoff.md",
         ):
             self.assertIn(reference, text, "SKILL.md must route to " + reference)
             self.assertTrue((SKILL / "references" / reference).is_file())
@@ -79,6 +80,36 @@ class RepositoryContractTests(unittest.TestCase):
             "choose the smallest sufficient assessment depth",
         ):
             self.assertNotIn(retired_term, governed_text)
+
+    def test_semantic_schematics_are_terminally_handed_off(self) -> None:
+        skill_text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+        handoff = (SKILL / "references" / "diagram-handoff.md").read_text(encoding="utf-8")
+        gates = (SKILL / "references" / "permission-gates.md").read_text(encoding="utf-8")
+        execution = (SKILL / "references" / "execution-validation.md").read_text(encoding="utf-8")
+        schema = (SKILL / "references" / "investigation-schema.md").read_text(encoding="utf-8")
+        acquisition = (SKILL / "references" / "target-figure-acquisition.md").read_text(encoding="utf-8")
+        agent = (SKILL / "agents" / "openai.yaml").read_text(encoding="utf-8")
+
+        router_at = skill_text.index("## Terminal diagram router")
+        self.assertLess(router_at, skill_text.index("## Invariants"))
+        self.assertLess(router_at, skill_text.index("## Unified workflow and stopping rule"))
+        self.assertIn("end SciRepro ownership immediately", skill_text)
+        self.assertIn("Do not create or continue a SciRepro target manifest", skill_text)
+        self.assertNotIn("## Specialized routing", skill_text)
+        self.assertIn("Once the transfer succeeds, SciRepro instructions cease to govern", handoff)
+        self.assertIn("one standing exception before SciRepro Phase 0", gates)
+        self.assertIn("must have left SciRepro through the terminal router", execution)
+        self.assertIn("legacy protocol value", execution)
+        self.assertIn("only for compatibility with archived protocol records", schema)
+        self.assertIn("do not create a SciRepro target workspace or manifest", acquisition)
+        self.assertIn("hand semantic schematics off to $sci-diagram-pptx immediately", agent)
+
+        for pinned in (
+            "SciToolsmith/sci-diagram-pptx",
+            "skills/sci-diagram-pptx",
+            "26a2ae281df4209fa9687ca80d27a3aa7feb1ee3",
+        ):
+            self.assertIn(pinned, handoff)
 
     def test_readmes_are_compact_parallel_product_pages(self) -> None:
         chinese_path = REPO / "README.md"
