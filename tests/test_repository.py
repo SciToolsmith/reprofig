@@ -80,6 +80,36 @@ class RepositoryContractTests(unittest.TestCase):
         ):
             self.assertNotIn(retired_term, governed_text)
 
+    def test_readmes_are_compact_parallel_product_pages(self) -> None:
+        chinese_path = REPO / "README.md"
+        english_path = REPO / "README.en.md"
+        chinese = chinese_path.read_text(encoding="utf-8")
+        english = english_path.read_text(encoding="utf-8")
+
+        self.assertLessEqual(len(chinese.splitlines()), 80)
+        self.assertLessEqual(len(english.splitlines()), 80)
+        self.assertEqual(chinese.count('<h1 align="center">SciRepro</h1>'), 1)
+        self.assertEqual(english.count('<h1 align="center">SciRepro</h1>'), 1)
+        self.assertNotIn("scirepro-hero", chinese + english)
+        self.assertIn("docs/assets/report-preview.webp", chinese)
+        self.assertIn("docs/assets/report-preview.webp", english)
+        for required in (
+            "使用 $skill-installer",
+            "使用 $scirepro",
+            "先看报告，再决定",
+            "你会得到",
+            "科学边界",
+        ):
+            self.assertIn(required, chinese)
+        for required in (
+            "Use $skill-installer",
+            "Use $scirepro",
+            "Review the report before execution",
+            "What you receive",
+            "Scientific boundaries",
+        ):
+            self.assertIn(required, english)
+
     def test_generated_cache_files_are_not_tracked(self) -> None:
         completed = subprocess.run(
             ["git", "ls-files"], cwd=REPO, text=True, capture_output=True, check=True,
