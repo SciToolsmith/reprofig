@@ -9,14 +9,14 @@ Hand off algorithm flowcharts, scientific workflows, technical routes, mechanism
 Keep quantitative plots in SciRepro when meaning is encoded mainly by axes, scales, legends, samples, or data-driven geometry, even if the plot contains callout arrows or explanatory boxes.
 
 - A process canvas containing a small photograph, spectrum, screenshot, or formula is one schematic. Hand off the whole target; the receiving skill decides whether that content remains a raster inset.
-- Clearly separable peer panels may be routed independently while retaining their parent figure and panel labels. Do not include handed-off panels in a SciRepro report.
-- When the panel boundary or requested deliverable is genuinely unclear, ask one concise scope question. Do not begin SciRepro Phase 0 while waiting.
+- Clearly separable peer panels may be routed independently while retaining their parent figure and panel labels. Exclude handed-off panels from SciRepro execution and its final result folder.
+- When the panel boundary or requested deliverable is genuinely unclear, ask one concise scope question. Do not begin SciRepro acquisition or execution while waiting.
 
 ## Acquire only what routing needs
 
 When only a paper and figure reference are available, obtain the minimum readable target needed for handoff. Preserve the original paper or upload, figure label, page, full caption, and a traceable crop or panel bounding box. Read nearby text or equations only when they disambiguate wording, formulas, arrow direction, grouping, or the selected panel.
 
-Do not create a SciRepro `targets/` workspace, verified-subset manifest, five-category assessment, source or environment audit, decision report, approval, or run bundle for this limited acquisition.
+Do not create a SciRepro target workspace or result folder for this limited acquisition.
 
 ## Ensure the companion without asking
 
@@ -47,6 +47,6 @@ Pass only the material the receiving skill needs:
 - the minimum nearby context needed to preserve visible wording, formulas, connector semantics, and scientific meaning;
 - the user's original requested deliverable and constraints.
 
-Do not pass SciRepro reproduction levels, five readiness categories, candidate routes, environment audit, approval schema, or run-bundle requirements. Once the transfer succeeds, SciRepro instructions cease to govern that target.
+Pass no SciRepro route, environment, validation, or result-folder machinery. Once the transfer succeeds, SciRepro instructions cease to govern that target.
 
 The receiver may return a target once only when it determines that meaning is actually encoded by quantitative axes, scales, or data-driven geometry. The return must state that reason. Resolution, unreadable text, runtime availability, or PPTX authoring limitations are not reasons to return ownership.

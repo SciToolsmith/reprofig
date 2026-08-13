@@ -11,9 +11,5 @@ venv/
 .coverage
 htmlcov/
 *.log
-reprofig-report*/
-reprofig-runs/
-*.reprofig-approval.json
-scirepro-report*/
-scirepro-runs/
-*.scirepro-approval.json
+.scirepro-run-*.staging/
+scirepro-run-*/
