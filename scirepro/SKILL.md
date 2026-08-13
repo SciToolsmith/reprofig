@@ -1,9 +1,22 @@
 ---
 name: scirepro
-description: Analyze, assess, and reproduce one or many scientific figures through an evidence-first, report-before-execution workflow. Use when Codex receives a paper with uploaded target images, a paper with figure references that must be acquired, or target images alone for explicitly limited image-derived reconstruction. Interpret what each target shows, reconstruct its data-to-figure chain, investigate only relevant code/data/environments, present a local report containing the target images, obtain scope-bound approval, then execute and validate approved routes. Route scientific flowcharts and conceptual schematics to sci-diagram-pptx when available.
+description: Analyze, assess, and reproduce one or many scientific figures through an evidence-first, report-before-execution workflow. Use when Codex receives a paper with uploaded target images, a paper with figure references that must be acquired, or target images alone for explicitly limited image-derived reconstruction. Interpret what each target shows, reconstruct its data-to-figure chain, investigate only relevant code/data/environments, present a local report containing the target images, obtain scope-bound approval, then execute and validate approved routes. If a target is a scientific flowchart, algorithm diagram, mechanism diagram, architecture, technical route, or conceptual schematic whose meaning is encoded mainly by nodes, connectors, containment, or topology, immediately hand it off to sci-diagram-pptx and end SciRepro ownership; bootstrap the pinned companion automatically when it is absent.
 ---
 
 # SciRepro
+
+## Terminal diagram router
+
+Apply this router to every requested target before any SciRepro invariant or phase.
+
+1. Classify from the supplied image when possible. If the user supplied only a paper and figure reference, acquire only the readable crop, caption, page binding, and nearby context needed to classify and hand off; this is not SciRepro Phase 0.
+2. Treat a target as a semantic schematic when its meaning is carried mainly by nodes, arrows or connectors, labels or formulas, containment, grouping, and topology rather than quantitative axes, scales, or data-driven geometry.
+3. For a semantic schematic, read [diagram-handoff.md](references/diagram-handoff.md), ensure the pinned `sci-diagram-pptx` companion is available, transfer the source and minimum context, and end SciRepro ownership immediately. The receiving skill is the sole authority from that point.
+4. Do not create or continue a SciRepro target manifest, evidence chain, environment audit, decision report, approval receipt, Phase 2 run, or run bundle for a handed-off target.
+
+Route multiple requested targets independently; a SciRepro report contains only targets retained here. A small chart, photograph, or formula embedded inside a larger process canvas is an inset, not a peer panel, so hand off the whole schematic. Split only clearly separable peer panels: hand off each schematic panel and retain only quantitative or other non-schematic panels. Permit one reasoned return from `sci-diagram-pptx` when the target is actually data-geometry driven; never bounce a target between skills.
+
+The rest of this document applies only to targets retained by this router.
 
 ## Invariants
 
@@ -13,14 +26,14 @@ description: Analyze, assess, and reproduce one or many scientific figures throu
 - Never present tracing, digitization, or visual fitting as reproduction of the original data, method, experiment, or claim.
 - Define target observables and acceptance criteria before route selection or execution. Visual similarity and exit code alone are not scientific validation.
 - Preserve provenance and never silently change the target, input, algorithm, mode, reproduction level, claim, or approved effects.
-- For an actual reproduction request, show a local decision report before execution. The report must display every target admitted to assessment.
+- For an actual reproduction request retained by SciRepro, show a local decision report before execution. The report must display every target admitted to assessment.
 - Prefer compatible existing environments. Create only project-local open-source environments within budget; never silently install proprietary software, accept terms, log in, purchase access, upload private artifacts, or contact third parties.
 
 ## Unified workflow and stopping rule
 
 For a read-only request about meaning, generation logic, missing evidence, or likely feasibility, answer directly. Materialize targets only when their identity must be stabilized; do not invent an approval ceremony or execute a reproduction.
 
-For every actual reproduction or output-producing request, follow one path: verify targets → understand their evidence role → reconstruct the target-dependent generation chain → form the minimum useful route → investigate only decision-changing unknowns → build the local target-displaying report → obtain scope-bound approval → execute and validate → finalize one run bundle. A request to “start now” does not bypass Phase 0, the local report, or approval.
+For every retained actual reproduction or output-producing request, follow one path: verify targets → understand their evidence role → reconstruct the target-dependent generation chain → form the minimum useful route → investigate only decision-changing unknowns → build the local target-displaying report → obtain scope-bound approval → execute and validate → finalize one run bundle. A request to “start now” does not bypass Phase 0, the local report, or approval.
 
 Apply **minimum sufficient investigation**. Start from the most defensible route and investigate an unknown only when resolving it can change at least one of: route feasibility, supported scientific claim or boundary, material cost/resources, or required permission/risk. Stop expanding the investigation when either a route can test the stated objective at its declared reproduction level with explicit assumptions and acceptance criteria, or every defensible route is blocked with concrete blockers and next actions. Do not keep searching for background completeness, inventory unrelated environments, or add alternatives that would not change the decision.
 
@@ -42,7 +55,7 @@ Read [target-figure-acquisition.md](references/target-figure-acquisition.md) onl
 
 ## Evidence and route model
 
-For scientific mode, assign each target the most defensible current level: `direct-recompute`, `mechanism-reproduction`, `alternative-validation`, `editable-reconstruction`, or `original-case-blocked`. Candidate routes serve that level; if a materially different route would change the level or supported claim, present it as a clearly separated alternative and renew the assessment before execution. Images-only work uses `image-derived-reconstruction`.
+For scientific mode, assign each retained target the most defensible current level: `direct-recompute`, `mechanism-reproduction`, `alternative-validation`, or `original-case-blocked`. Candidate routes serve that level; if a materially different route would change the level or supported claim, present it as a clearly separated alternative and renew the assessment before execution. Images-only work uses `image-derived-reconstruction`. `editable-reconstruction` is an archived protocol value only; new semantic schematics leave through the terminal router.
 
 Cover all five route categories—`input`, `method`, `protocol`, `validation`, and `environment`—but do not manufacture exactly five checklist rows. Each category may contain one or many concrete conditions; use `not-required` when a category genuinely does not apply.
 
@@ -113,9 +126,3 @@ Read [execution-validation.md](references/execution-validation.md) only after ap
 6. Finalize exactly one run-bundle directory with status, per-target outputs and validation, reusable code/configuration, environment, commands, resource use, provenance, licenses, assumptions, and patches. A `complete` or `partial` reproduction must include an updated local result report; a `failed`, `blocked`, or `cancelled` diagnostic bundle may omit it. Restricted resources are referenced, not redistributed.
 
 Report execution status, validation status, and scientific-claim status separately. Preserve diagnostic manifests and logs even for partial, failed, blocked, or cancelled runs.
-
-## Specialized routing
-
-- For quantitative plots and data/computation-derived figures, continue here.
-- For workflow, architecture, mechanism, or editable conceptual schematics, use `sci-diagram-pptx` when installed; otherwise point to its official project without claiming installation.
-- For mixed panels, audit panels separately while retaining one target identity and aggregate conclusion.

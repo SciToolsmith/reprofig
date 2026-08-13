@@ -1,4 +1,4 @@
 interface:
   display_name: "SciRepro"
   short_description: "研判科研图件复现路线，并交付可验证、可追溯的复现结果"
-  default_prompt: "Use $scirepro to verify my target figures, trace only the target-dependent research chain, investigate decision-changing gaps, and show the proposed route in a local report before reproduction."
+  default_prompt: "Use $scirepro to hand semantic schematics off to $sci-diagram-pptx immediately, installing the pinned companion if absent; assess retained figures in a local report before reproduction."

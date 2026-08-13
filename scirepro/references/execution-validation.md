@@ -50,7 +50,7 @@ Use a declared substitute dataset, implementation, or experiment. State the narr
 
 ### Editable reconstruction
 
-Use only for workflows, architectures, mechanism diagrams, and other semantic schematics. Prefer `sci-diagram-pptx` when installed. Validate node text, grouping, connections, directions, formulas, and editability. Do not use this route for quantitative axes or data-driven geometry.
+A pure workflow, architecture, mechanism diagram, or other semantic schematic must have left SciRepro through the terminal router before Phase 0. If one reaches Phase 2, stop without consuming the SciRepro approval or creating a SciRepro run bundle, then follow [diagram-handoff.md](diagram-handoff.md). Keep `editable-reconstruction` only as a legacy protocol value; do not create a new pure-schematic SciRepro route. Quantitative axes or data-driven geometry remain outside this legacy value.
 
 ### Original case blocked
 
@@ -61,6 +61,8 @@ Do not fabricate the missing original input. Deliver the verified blocker, check
 Use only when the target has no paper-grounded scientific context. Execute the approved digitization, tracing, layout, vectorization, or appearance-fitting route and quantify its declared geometric or visual error. Label all recovered values as image-derived. Do not claim recovery of the original data, method, experiment, uncertainty, or scientific conclusion. Follow [image-derived-reconstruction.md](image-derived-reconstruction.md).
 
 ## Figure-type routing
+
+Pure semantic schematics should never reach this Phase 2 list; the terminal router owns that decision before Phase 0.
 
 - Quantitative/statistical plots: code, data, protocol, numerical validation.
 - Spectra/time series: sampling, preprocessing, scaling, windows, frequency axes, peaks, envelopes.

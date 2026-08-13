@@ -20,6 +20,8 @@ Use $scirepro to reproduce Figures 6 and 7 from this paper.
 
 Use paper references, a paper with uploaded images, or images alone. Single- and multi-target requests follow the same workflow.
 
+Algorithm flowcharts, mechanism diagrams, technical routes, and scientific architectures are handed directly to `sci-diagram-pptx` at the entry point and never enter SciRepro assessment, reporting, or approval. If the companion Skill is absent, SciRepro installs it from a pinned official public commit into the user-level Skills directory and continues; it never auto-installs the companion's runtimes or system software.
+
 ## Review the report before execution
 
 **Verify targets → trace the generation chain → form a reproduction route → local decision report → researcher approval → execution and scientific validation**
