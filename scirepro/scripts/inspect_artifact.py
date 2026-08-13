@@ -151,7 +151,7 @@ def main() -> int:
         parser.error(f"artifact does not exist: {supplied.name or '$ARTIFACT'}")
 
     report = {
-        "schemaVersion": "reprofig.artifact/v1",
+        "schemaVersion": "scirepro.artifact/v2",
         "path": "$ARTIFACT",
         "name": path.name,
         "type": "directory" if path.is_dir() else "file",

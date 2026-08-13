@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 import unittest
@@ -22,16 +21,6 @@ class RepositoryContractTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_browser_javascript_parses(self) -> None:
-        node = shutil.which("node")
-        self.assertIsNotNone(node, "Node.js is required to syntax-check the offline report application")
-        app = SKILL / "assets" / "research-report-web" / "app.js"
-        completed = subprocess.run([node, "--check", str(app)], cwd=REPO, text=True, capture_output=True)
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        source = app.read_text(encoding="utf-8")
-        self.assertNotIn("findRoute(", source)
-        self.assertIn("routeFor(figure, binding.routeId)", source)
-
     def test_skill_frontmatter_and_routed_references(self) -> None:
         text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
         self.assertTrue(text.startswith("---\n"))
@@ -40,11 +29,8 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertRegex(frontmatter, r"(?m)^description:\s*\S")
         for reference in (
             "target-figure-acquisition.md",
-            "report-scaffold.md",
             "image-derived-reconstruction.md",
             "source-environment-audit.md",
-            "investigation-schema.md",
-            "web-report-contract.md",
             "permission-gates.md",
             "execution-validation.md",
             "run-bundle-contract.md",
@@ -53,13 +39,14 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertIn(reference, text, "SKILL.md must route to " + reference)
             self.assertTrue((SKILL / "references" / reference).is_file())
 
-    def test_skill_uses_one_minimum_sufficient_workflow(self) -> None:
+    def test_skill_uses_one_adaptive_automatic_workflow(self) -> None:
         skill_text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("## Unified workflow and stopping rule", skill_text)
-        self.assertIn("minimum sufficient investigation", skill_text)
-        self.assertIn("candidate specifications, not automatically correct facts", skill_text)
-        self.assertIn("Do not derive or audit unrelated formulas", skill_text)
-        self.assertIn("build the local target-displaying report", skill_text)
+        self.assertIn("## Core workflow", skill_text)
+        self.assertIn("Resolve decision-changing unknowns", skill_text)
+        self.assertIn("Treat paper equations, parameters, and code as candidate specifications", skill_text)
+        self.assertIn("never silently repair them", skill_text)
+        self.assertIn("Run bounded, create-only local work directly", skill_text)
+        self.assertIn("stop with the evidence checked", skill_text)
 
         governed_files = (
             REPO / "README.md",
@@ -67,7 +54,8 @@ class RepositoryContractTests(unittest.TestCase):
             SKILL / "SKILL.md",
             SKILL / "agents" / "openai.yaml",
             SKILL / "references" / "permission-gates.md",
-            SKILL / "references" / "report-scaffold.md",
+            SKILL / "references" / "execution-validation.md",
+            SKILL / "references" / "run-bundle-contract.md",
         )
         governed_text = "\n".join(path.read_text(encoding="utf-8") for path in governed_files)
         for retired_term in (
@@ -78,31 +66,49 @@ class RepositoryContractTests(unittest.TestCase):
             "**Compact local report**",
             "**Full audited report**",
             "choose the smallest sufficient assessment depth",
+            "Review the report before execution",
+            "先看报告，再决定",
         ):
             self.assertNotIn(retired_term, governed_text)
+
+    def test_v02_has_no_pre_execution_web_or_intermediate_review(self) -> None:
+        governed_files = (
+            REPO / "README.md",
+            REPO / "README.en.md",
+            SKILL / "SKILL.md",
+            SKILL / "agents" / "openai.yaml",
+            SKILL / "references" / "permission-gates.md",
+            SKILL / "references" / "execution-validation.md",
+            SKILL / "references" / "run-bundle-contract.md",
+        )
+        governed = "\n".join(path.read_text(encoding="utf-8") for path in governed_files)
+        for forbidden in (
+            "report-before-execution",
+            "awaiting-approval",
+            "Review the report before execution",
+            "先看报告，再决定",
+            "docs/assets/report-preview.webp",
+        ):
+            self.assertNotIn(forbidden, governed)
+        self.assertIn("Do not create a pre-execution webpage", governed)
+        self.assertIn("asked concisely in chat", governed)
 
     def test_semantic_schematics_are_terminally_handed_off(self) -> None:
         skill_text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
         handoff = (SKILL / "references" / "diagram-handoff.md").read_text(encoding="utf-8")
         gates = (SKILL / "references" / "permission-gates.md").read_text(encoding="utf-8")
         execution = (SKILL / "references" / "execution-validation.md").read_text(encoding="utf-8")
-        schema = (SKILL / "references" / "investigation-schema.md").read_text(encoding="utf-8")
         acquisition = (SKILL / "references" / "target-figure-acquisition.md").read_text(encoding="utf-8")
         agent = (SKILL / "agents" / "openai.yaml").read_text(encoding="utf-8")
 
-        router_at = skill_text.index("## Terminal diagram router")
-        self.assertLess(router_at, skill_text.index("## Invariants"))
-        self.assertLess(router_at, skill_text.index("## Unified workflow and stopping rule"))
-        self.assertIn("end SciRepro ownership immediately", skill_text)
-        self.assertIn("Do not create or continue a SciRepro target manifest", skill_text)
-        self.assertNotIn("## Specialized routing", skill_text)
+        router_at = skill_text.index("## Route ownership first")
+        self.assertLess(router_at, skill_text.index("## Core workflow"))
+        self.assertIn("end SciRepro ownership", skill_text)
         self.assertIn("Once the transfer succeeds, SciRepro instructions cease to govern", handoff)
-        self.assertIn("one standing exception before SciRepro Phase 0", gates)
-        self.assertIn("must have left SciRepro through the terminal router", execution)
-        self.assertIn("legacy protocol value", execution)
-        self.assertIn("only for compatibility with archived protocol records", schema)
-        self.assertIn("do not create a SciRepro target workspace or manifest", acquisition)
-        self.assertIn("hand semantic schematics off to $sci-diagram-pptx immediately", agent)
+        self.assertIn("Pinned diagram companion exception", gates)
+        self.assertIn("was misrouted; return to [diagram-handoff.md]", execution)
+        self.assertIn("For a semantic schematic, follow [diagram-handoff.md]", acquisition)
+        self.assertIn("hand semantic schematics to $sci-diagram-pptx", agent)
 
         for pinned in (
             "SciToolsmith/sci-diagram-pptx",
@@ -110,6 +116,51 @@ class RepositoryContractTests(unittest.TestCase):
             "26a2ae281df4209fa9687ca80d27a3aa7feb1ee3",
         ):
             self.assertIn(pinned, handoff)
+
+    def test_legacy_decision_report_stack_is_not_installed(self) -> None:
+        retired = (
+            "scripts/build_report.py",
+            "scripts/init_report.py",
+            "scripts/plan_gate.py",
+            "scripts/execution_gate.py",
+            "references/investigation-schema.md",
+            "references/report-scaffold.md",
+            "references/web-report-contract.md",
+            "references/execution-contract.md",
+            "references/automatic-run-folder.md",
+            "assets/research-report-web/index.html",
+        )
+        for relative in retired:
+            self.assertFalse((SKILL / relative).exists(), relative + " must not ship in the active skill")
+
+    def test_runtime_dependencies_and_pdf_ci_are_declared(self) -> None:
+        requirements = (SKILL / "requirements.txt").read_text(encoding="utf-8")
+        workflow = (REPO / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
+        self.assertIn("Pillow", requirements)
+        self.assertIn("pdfplumber", requirements)
+        self.assertIn("poppler", workflow)
+        self.assertIn("scirepro/requirements.txt", workflow)
+
+    def test_installable_skill_contains_no_case_specific_rules(self) -> None:
+        installable_files = [
+            path for path in SKILL.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        ]
+        installable_text = "\n".join(
+            path.read_text(encoding="utf-8", errors="ignore")
+            for path in installable_files
+        )
+        for case_specific_term in (
+            "Feature Mode Decomposition",
+            "IMCKD",
+            "sig1.mat",
+            "FMD Fig.",
+        ):
+            self.assertNotIn(
+                case_specific_term,
+                installable_text,
+                "regression-case details must stay in tests, not the reusable skill",
+            )
 
     def test_readmes_are_compact_parallel_product_pages(self) -> None:
         chinese_path = REPO / "README.md"
@@ -122,22 +173,21 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertEqual(chinese.count('<h1 align="center">SciRepro</h1>'), 1)
         self.assertEqual(english.count('<h1 align="center">SciRepro</h1>'), 1)
         self.assertNotIn("scirepro-hero", chinese + english)
-        self.assertIn("docs/assets/report-preview.webp", chinese)
-        self.assertIn("docs/assets/report-preview.webp", english)
+        self.assertNotIn("docs/assets/report-preview.webp", chinese + english)
         for required in (
             "使用 $skill-installer",
             "使用 $scirepro",
-            "先看报告，再决定",
-            "你会得到",
-            "科学边界",
+            "工作方式",
+            "作者原生实现",
+            "最终交付",
         ):
             self.assertIn(required, chinese)
         for required in (
             "Use $skill-installer",
             "Use $scirepro",
-            "Review the report before execution",
-            "What you receive",
-            "Scientific boundaries",
+            "How it works",
+            "Author-native implementations",
+            "Final delivery",
         ):
             self.assertIn(required, english)
 

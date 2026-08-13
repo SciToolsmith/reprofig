@@ -1,59 +1,49 @@
 <h1 align="center">SciRepro</h1>
 
-<p align="center"><strong>From paper figures back to a research process that can be tested</strong></p>
-<p align="center">Turn target figures into verified objects, approval-ready reproduction routes, and testable scientific results.</p>
-<p align="center"><a href="README.md">简体中文</a> · <strong>English</strong> · <a href="#quick-start">Quick start</a> · <a href="scirepro/SKILL.md">Full specification</a></p>
+<p align="center"><strong>From a scientific figure back to a research process that can run, compare, and be tested</strong></p>
+<p align="center"><a href="README.md">简体中文</a> · English · <a href="scirepro/SKILL.md">Skill specification</a></p>
+
+SciRepro is a scientific-figure reproduction Skill for Codex. It accepts a paper with target images, a paper with figure references, or target images alone; traces the target-relevant data–method–parameter–plot chain; executes the best-supported route; and validates the result against predefined scientific observables.
+
+Its goal is not closer pixel imitation. It delivers rerunnable evidence: a successful reproduction, an honestly bounded alternative validation, a useful negative result, or a precise blocker with a path to resolution.
 
 ## Quick start
-
-**Install**
 
 ```text
 Use $skill-installer to install https://github.com/SciToolsmith/scirepro/tree/main/scirepro
 ```
 
-**Invoke**
-
 ```text
-Use $scirepro to reproduce Figures 6 and 7 from this paper.
+Use $scirepro to reproduce Figures 1, 6, and 7 from this paper.
 ```
 
-Use paper references, a paper with uploaded images, or images alone. Single- and multi-target requests follow the same workflow.
+Three entry paths are supported:
 
-Algorithm flowcharts, mechanism diagrams, technical routes, and scientific architectures are handed directly to `sci-diagram-pptx` at the entry point and never enter SciRepro assessment, reporting, or approval. If the companion Skill is absent, SciRepro installs it from a pinned official public commit into the user-level Skills directory and continues; it never auto-installs the companion's runtimes or system software.
+- a paper plus uploaded target images;
+- a paper plus figure or panel references, with target acquisition and verification by the Skill;
+- target images alone for explicitly labelled image-derived reconstruction, never presented as recovery of the original experiment or data.
 
-## Review the report before execution
+Algorithm flowcharts, mechanism diagrams, technical routes, and scientific architectures are handed to `sci-diagram-pptx`. A missing companion Skill may be deployed from a pinned public commit within a strict boundary; this never installs its runtimes or system software and never overwrites an existing installation.
 
-**Verify targets → trace the generation chain → form a reproduction route → local decision report → researcher approval → execution and scientific validation**
+## How it works
 
-Before execution, SciRepro generates a local web report containing the target figures and then stops. The report explains what each figure shows, how it was produced, what can be reproduced on the current computer, what is missing, and what each route can and cannot support.
+```text
+Lock target → understand the scientific observable → trace the relevant generation chain
+→ choose an honest route → run and preserve V0 → validate and iterate from evidence
+→ one result folder
+```
 
-[![Example SciRepro local decision report showing the paper, target figure, and reproduction assessment](docs/assets/report-preview.webp)](docs/assets/report-preview.webp)
+- Author-native implementations are the default evidence-preserving preference, but the user’s objective determines the route. An independent implementation, derivation, port, or cross-check may be the right choice; substitutions are always explicit.
+- Only formulas, parameters, data, and environments capable of changing the target result or conclusion are investigated.
+- Safe, create-only, bounded local routes run directly. The user is asked only for material effects such as login, payment, shared licenses, GPU or cloud use, overwrite, upload, or publication.
+- Planned resource caps are declarations by default. They are described as enforced or measured only when the execution mechanism provides that evidence.
+- The untuned V0 is preserved. Later runs require a concrete diagnosis or testable hypothesis and stop when they can no longer add meaningful scientific information.
+- Execution failure, validation failure, and lack of support for a paper claim remain distinct. Reproduction failure alone is not a finding of misconduct.
 
-<p align="center"><sub>Real report output · click to view at full size</sub></p>
+## Final delivery
 
-SciRepro executes only after you approve the targets, route, assumptions, resource limits, and permission boundary.
+Once persistent work exists, SciRepro delivers one `scirepro-run-<id>/` folder containing target and source boundaries, rerunnable code and commands, inputs and parameters, environment evidence, V0 and any justified later versions, comparisons and validation, assumptions, licenses, logs, and remaining differences. Shared evidence is stored once, while each target’s success, failure, or blocker remains isolated.
 
-## What you receive
+## License
 
-- **Before approval:** a verified target set and a reviewable local decision report.
-- **After approval:** one rerunnable result directory containing code, configuration, figures, validation, logs, sources, and hashes.
-- **For every target:** separate records for execution status, validation status, and support for the paper's claim.
-
-## Scientific boundaries
-
-> **Code completion does not mean the figure passed validation; figure-level validation does not automatically support the paper's claim.**
-
-- **With a paper:** reconstruct the data–method–protocol–plot chain and validate predefined scientific phenomena or metrics.
-- **Images only:** reconstruct visible curves, geometry, and layout without claiming recovery of the original data, experiment, method, or paper conclusion.
-- Equations, parameters, and author code are primary evidence, not presumed truth; SciRepro checks only what the target directly depends on.
-- Preserve the untuned baseline and valid negative results; never substitute pixel similarity for scientific validation.
-- Login, payment, large downloads, GPU use, overwrite, upload, and publication require explicit approval.
-
-## Documentation and license
-
-[Reproduction levels](scirepro/SKILL.md#evidence-and-route-model) ·
-[Approval boundary](scirepro/SKILL.md#permissions-and-approval) ·
-[Run-bundle contract](scirepro/references/run-bundle-contract.md)
-
-SciRepro is released under the [MIT License](LICENSE). Papers, datasets, third-party code, and generated artifacts retain their respective rights and licenses.
+SciRepro is released under the [MIT License](LICENSE). Papers, datasets, third-party code, and generated artifacts retain their respective rights, access conditions, and licenses.

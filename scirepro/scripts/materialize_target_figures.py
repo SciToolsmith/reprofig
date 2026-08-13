@@ -45,6 +45,18 @@ MAX_PDF_BYTES = 512 * 1024 * 1024
 MAX_PDF_PAGES = 5000
 MAX_RENDER_PIXELS = 120_000_000
 MAX_IMAGE_PIXELS = 120_000_000
+DEFAULT_ACQUISITION_BUDGET_BYTES = 2 * 1024**3
+MAX_ACQUISITION_BUDGET_BYTES = 64 * 1024**3
+AUTO_PDFTOPPM_CANDIDATES = (
+    Path("/opt/homebrew/bin/pdftoppm"),
+    Path("/usr/local/bin/pdftoppm"),
+    Path("/usr/bin/pdftoppm"),
+)
+TRUSTED_PDFTOPPM_ROOTS = (
+    Path("/opt/homebrew"),
+    Path("/usr/local"),
+    Path("/usr/bin"),
+)
 
 
 class TargetError(ValueError):
@@ -105,6 +117,92 @@ def require_pdfplumber() -> None:
         pdfplumber is not None,
         "pdfplumber is required for paper figure extraction; use an existing compatible environment or create a project-local isolated environment",
     )
+
+
+def path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_pdftoppm(
+    requested: Optional[Path], *, output: Path, inputs: List[Path]
+) -> Path:
+    """Resolve Poppler without consulting a user-controlled PATH.
+
+    Explicit paths must name the real executable rather than a symlink.  The
+    fixed automatic Homebrew paths may themselves be package-manager symlinks,
+    but their resolved targets must remain inside the trusted installation
+    roots.  Neither spelling nor resolved target may live in the current task,
+    output tree, or an input-controlled directory.
+    """
+    explicit = requested is not None
+    candidates = [requested] if explicit else list(AUTO_PDFTOPPM_CANDIDATES)
+    rejected = False
+    controlled_roots = [Path.cwd().resolve(), output.resolve(strict=False)]
+    controlled_roots.extend(path.parent.resolve() for path in inputs)
+    for raw in candidates:
+        if raw is None:
+            continue
+        candidate = raw.expanduser()
+        if not candidate.is_absolute():
+            if explicit:
+                raise TargetError("--pdftoppm-executable must be an absolute path")
+            continue
+        try:
+            if explicit and candidate.is_symlink():
+                raise TargetError("--pdftoppm-executable must name the real executable, not a symlink")
+            resolved = candidate.resolve(strict=True)
+        except FileNotFoundError:
+            if explicit:
+                raise TargetError("--pdftoppm-executable does not exist")
+            continue
+        if not resolved.is_file() or not os.access(resolved, os.X_OK):
+            if explicit:
+                raise TargetError("--pdftoppm-executable is not a regular executable file")
+            continue
+        if candidate.name != "pdftoppm" or resolved.name != "pdftoppm":
+            if explicit:
+                raise TargetError("--pdftoppm-executable must identify pdftoppm")
+            continue
+        if any(path_is_within(candidate.resolve(strict=False), root) or path_is_within(resolved, root)
+               for root in controlled_roots):
+            rejected = True
+            if explicit:
+                raise TargetError("--pdftoppm-executable may not come from the task, input, or output tree")
+            continue
+        if not any(path_is_within(resolved, root) for root in TRUSTED_PDFTOPPM_ROOTS):
+            rejected = True
+            if explicit:
+                raise TargetError("--pdftoppm-executable is outside trusted system or package-manager roots")
+            continue
+        return resolved
+    suffix = " (untrusted candidates were ignored)" if rejected else ""
+    raise TargetError(
+        "trusted pdftoppm was not found; provide its absolute, non-symlinked system installation path "
+        "with --pdftoppm-executable" + suffix
+    )
+
+
+def image_preflight(source: Path) -> Tuple[int, int, int]:
+    """Read dimensions before copying and estimate preserved plus normalized bytes."""
+    require_pillow()
+    try:
+        with Image.open(source) as opened:
+            width, height = ImageOps.exif_transpose(opened).size
+            require(
+                width > 0 and height > 0 and width * height <= MAX_IMAGE_PIXELS,
+                f"image exceeds the {MAX_IMAGE_PIXELS}-pixel safety limit: {source.name}",
+            )
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise TargetError(f"unsupported or malformed image {source.name}: {exc}") from exc
+    # A metadata-minimized RGB PNG is bounded conservatively by four bytes per
+    # pixel plus fixed container/encoder headroom. This is a planning estimate,
+    # not a runtime quota claim.
+    normalized_estimate = width * height * 4 + 1024 * 1024
+    return width, height, source.stat().st_size + normalized_estimate
 
 
 def sha256_file(path: Path) -> str:
@@ -357,8 +455,8 @@ def caption_for(page: object, figure_number: int) -> Optional[Tuple[str, Tuple[f
         )
     text = winner["text"]
     # Some PDFs visually typeset the caption separator but omit it from the
-    # text layer (FMD Fig. 17 is one example).  Normalize only a missing
-    # separator in an otherwise recognized `Fig. N` marker.
+    # text layer. Normalize only a missing separator in an otherwise
+    # recognized `Fig. N` marker.
     marker = re.match(
         rf"^\s*(fig(?:ure)?\.?)\s*{figure_number}(?:\s*[.:-])?\s*",
         text,
@@ -420,18 +518,32 @@ def tighten_horizontal_bounds(
     return left, right
 
 
-def run_pdftoppm(pdf: Path, page_number: int, dpi: int, output_stem: Path) -> Path:
+def run_pdftoppm(
+    executable: Path, pdf: Path, page_number: int, dpi: int, output_stem: Path
+) -> Path:
     command = [
-        "pdftoppm", "-f", str(page_number), "-l", str(page_number),
+        str(executable), "-f", str(page_number), "-l", str(page_number),
         "-r", str(dpi), "-singlefile", "-png", str(pdf), str(output_stem),
     ]
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=120)
-    except FileNotFoundError as exc:
-        raise TargetError("pdftoppm is required for paper figure extraction") from exc
-    require(completed.returncode == 0, f"pdftoppm failed for page {page_number}: {completed.stderr.strip()}")
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+            env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+        )
+    except (FileNotFoundError, PermissionError) as exc:
+        raise TargetError(f"validated pdftoppm could not start for page {page_number}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise TargetError(f"pdftoppm timed out after 120 seconds for page {page_number}") from exc
+    require(
+        completed.returncode == 0,
+        f"pdftoppm failed for page {page_number} (exit code {completed.returncode}); renderer details were omitted",
+    )
     rendered = output_stem.with_suffix(".png")
-    require(rendered.is_file(), f"pdftoppm did not create {rendered.name}")
+    require(rendered.is_file() and not rendered.is_symlink(), f"pdftoppm did not create the expected page image")
     return rendered
 
 
@@ -459,7 +571,7 @@ def detect_figure_top(
     # Publisher figure panels commonly contain 10-15 px internal gutters at
     # 300 DPI.  A separator between a figure and surrounding prose is much
     # larger.  Requiring roughly 0.15 inch avoids treating a panel gutter as
-    # the top boundary (the FMD Fig. 20 photo/schematic pair is a regression
+    # the top boundary (a tightly stacked photo/schematic pair is a regression
     # case) while remaining conservative: every crop still requires QA.
     gap_required = max(36, round(dpi * 0.15))
     blank = 0
@@ -701,7 +813,7 @@ def validate_manifest(manifest: object, *, root: Optional[Path] = None, require_
                     f"{target_id}: invalid replacement {key}",
                 )
         require(isinstance(target.get("normalizedSha256"), str) and re.fullmatch(r"[0-9a-f]{64}", target["normalizedSha256"]), f"{target_id}: invalid normalized SHA-256")
-        require(target.get("targetSha256") == target.get("normalizedSha256"), f"{target_id}: target hash must bind the normalized Phase 0 object")
+        require(target.get("targetSha256") == target.get("normalizedSha256"), f"{target_id}: target hash must bind the normalized target object")
         require(isinstance(target.get("sourceSha256"), str) and re.fullmatch(r"[0-9a-f]{64}", target["sourceSha256"]), f"{target_id}: invalid source SHA-256")
         if root is not None:
             require_pillow()
@@ -1068,8 +1180,8 @@ def replace_target(manifest_path: Path, target_id: str, replacement: Path, dpi: 
     return 0
 
 
-def preflight_acquisition(args: argparse.Namespace) -> Tuple[Optional[Path], List[Path], List[int], List[int]]:
-    """Resolve every input and target ID before creating output artifacts."""
+def preflight_acquisition(args: argparse.Namespace, output: Path) -> dict:
+    """Resolve identity, renderer, and aggregate disk estimate before output."""
     paper = checked_user_path(args.paper, "paper", must_exist=True) if args.paper else None
     images = [checked_user_path(path, "target image", must_exist=True) for path in args.image]
     figure_numbers = parse_figure_numbers(args.figures)
@@ -1096,10 +1208,104 @@ def preflight_acquisition(args: argparse.Namespace) -> Tuple[Optional[Path], Lis
     extracted_ids = [f"fig-{number:02d}" for number in figure_numbers]
     all_ids = uploaded_ids + extracted_ids
     require(len(all_ids) == len(set(all_ids)), "uploaded images and paper references resolve to duplicate target IDs")
-    return paper, images, figure_numbers, uploaded_refs
+
+    input_bytes = sum(source.stat().st_size for source in images)
+    estimated_bytes = 0
+    image_dimensions: Dict[str, Tuple[int, int]] = {}
+    for source in images:
+        width, height, image_estimate = image_preflight(source)
+        image_dimensions[str(source)] = (width, height)
+        estimated_bytes += image_estimate
+
+    renderer = None
+    pdf_figure_matches: Dict[int, Tuple[int, str, Tuple[float, float, float, float]]] = {}
+    uploaded_caption_matches: Dict[int, List[Tuple[int, str]]] = {}
+    if paper is not None:
+        require_pdfplumber()
+        paper_size = paper.stat().st_size
+        input_bytes += paper_size
+        estimated_bytes += paper_size  # preserved paper copy
+        with pdfplumber.open(paper) as pdf:
+            require(1 <= len(pdf.pages) <= MAX_PDF_PAGES, f"paper must contain 1-{MAX_PDF_PAGES} pages")
+            caption_index: Dict[int, List[Tuple[int, str, Tuple[float, float, float, float]]]] = {}
+            for figure_number in sorted(set(figure_numbers + uploaded_refs)):
+                matches = []
+                for page_index, page in enumerate(pdf.pages, start=1):
+                    result = caption_for(page, figure_number)
+                    if result:
+                        matches.append((page_index, result[0], result[1]))
+                caption_index[figure_number] = matches
+            for figure_number in uploaded_refs:
+                uploaded_caption_matches[figure_number] = [
+                    (page_number, caption) for page_number, caption, _ in caption_index[figure_number]
+                ]
+            for figure_number in figure_numbers:
+                matches = caption_index[figure_number]
+                require(matches, f"Fig. {figure_number} caption was not found in the paper")
+                require(
+                    len(matches) == 1,
+                    f"Fig. {figure_number} matched multiple paper pages; use a reviewed manual crop",
+                )
+                page_number, caption, caption_bbox = matches[0]
+                page = pdf.pages[page_number - 1]
+                page_pixels = round((float(page.width) * args.dpi / 72) * (float(page.height) * args.dpi / 72))
+                require(
+                    page_pixels <= MAX_RENDER_PIXELS,
+                    f"Fig. {figure_number}: rendered page would exceed {MAX_RENDER_PIXELS} pixels",
+                )
+                pdf_figure_matches[figure_number] = (page_number, caption, caption_bbox)
+                # Per figure: original crop, normalized crop, and QA overlay,
+                # each conservatively bounded by a full RGB(A) page. Unique
+                # pages add one temporary render at peak usage.
+                estimated_bytes += page_pixels * 12 + 3 * 1024 * 1024
+            for page_number in {match[0] for match in pdf_figure_matches.values()}:
+                page = pdf.pages[page_number - 1]
+                page_pixels = round((float(page.width) * args.dpi / 72) * (float(page.height) * args.dpi / 72))
+                estimated_bytes += page_pixels * 4 + 1024 * 1024
+    if figure_numbers:
+        renderer = resolve_pdftoppm(
+            args.pdftoppm_executable,
+            output=output,
+            inputs=([paper] if paper else []) + images,
+        )
+    elif args.pdftoppm_executable is not None:
+        raise TargetError("--pdftoppm-executable is only used with --paper and --figures")
+
+    budget = (
+        DEFAULT_ACQUISITION_BUDGET_BYTES
+        if args.max_output_bytes is None
+        else args.max_output_bytes
+    )
+    require(
+        1 <= budget <= MAX_ACQUISITION_BUDGET_BYTES,
+        f"--max-output-bytes must be a positive integer no greater than {MAX_ACQUISITION_BUDGET_BYTES}",
+    )
+    require(
+        estimated_bytes <= budget,
+        "acquisition preflight exceeds the aggregate disk budget: "
+        f"inputs={input_bytes} bytes, estimated peak acquisition={estimated_bytes} bytes, "
+        f"budget={budget} bytes; use a reviewed smaller target set/DPI or explicitly authorize a finite "
+        "increase with --max-output-bytes",
+    )
+    return {
+        "paper": paper,
+        "images": images,
+        "figureNumbers": figure_numbers,
+        "uploadedRefs": uploaded_refs,
+        "pdftoppm": renderer,
+        "pdfFigureMatches": pdf_figure_matches,
+        "uploadedCaptionMatches": uploaded_caption_matches,
+        "imageDimensions": image_dimensions,
+        "resourceEstimate": {
+            "kind": "preflight-estimate-not-runtime-enforcement",
+            "inputBytes": input_bytes,
+            "estimatedPeakAcquisitionBytes": estimated_bytes,
+            "budgetBytes": budget,
+        },
+    }
 
 
-def materialize_into(args: argparse.Namespace, output: Path) -> int:
+def materialize_into(args: argparse.Namespace, output: Path, plan: dict) -> int:
     require_pillow()
     output.mkdir(parents=True, exist_ok=True)
     originals = output / "originals"
@@ -1109,7 +1315,10 @@ def materialize_into(args: argparse.Namespace, output: Path) -> int:
     figures_dir.mkdir()
     qa_dir.mkdir()
 
-    paper, images, figure_numbers, uploaded_refs = preflight_acquisition(args)
+    paper = plan["paper"]
+    images = plan["images"]
+    figure_numbers = plan["figureNumbers"]
+    uploaded_refs = plan["uploadedRefs"]
 
     paper_info = None
     pdf = None
@@ -1148,11 +1357,7 @@ def materialize_into(args: argparse.Namespace, output: Path) -> int:
             matched_caption = None
             matched_page = None
             if pdf is not None and reference is not None:
-                caption_matches = []
-                for page_index, candidate_page in enumerate(pdf.pages, start=1):
-                    result = caption_for(candidate_page, reference)
-                    if result:
-                        caption_matches.append((page_index, result[0]))
+                caption_matches = plan["uploadedCaptionMatches"].get(reference, [])
                 if len(caption_matches) == 1:
                     matched_page, matched_caption = caption_matches[0]
                     notes.append("Figure reference and authoritative caption matched to the supplied paper; verify the uploaded pixels visually.")
@@ -1197,21 +1402,15 @@ def materialize_into(args: argparse.Namespace, output: Path) -> int:
                     target_id = f"fig-{figure_number:02d}"
                     require(target_id not in used_ids, f"duplicate target: {target_id}")
                     used_ids.add(target_id)
-                    matches: list[tuple[int, str, tuple[float, float, float, float]]] = []
-                    for page_index, page in enumerate(pdf.pages, start=1):
-                        result = caption_for(page, figure_number)
-                        if result:
-                            matches.append((page_index, result[0], result[1]))
-                    require(matches, f"Fig. {figure_number} caption was not found in the paper")
-                    require(len(matches) == 1, f"Fig. {figure_number} matched multiple paper pages; use a reviewed manual crop")
-                    page_number, caption, caption_bbox = matches[0]
+                    page_number, caption, caption_bbox = plan["pdfFigureMatches"][figure_number]
                     page = pdf.pages[page_number - 1]
                     estimated_pixels = (float(page.width) * args.dpi / 72) * (float(page.height) * args.dpi / 72)
                     require(estimated_pixels <= MAX_RENDER_PIXELS, f"Fig. {figure_number}: rendered page would exceed {MAX_RENDER_PIXELS} pixels")
                     rendered = rendered_pages.get(page_number)
                     if rendered is None:
                         rendered = run_pdftoppm(
-                            paper, page_number, args.dpi, temporary_dir / f"page-{page_number}"
+                            plan["pdftoppm"], paper, page_number, args.dpi,
+                            temporary_dir / f"page-{page_number}"
                         )
                         rendered_pages[page_number] = rendered
                     with Image.open(rendered) as opened:
@@ -1219,7 +1418,7 @@ def materialize_into(args: argparse.Namespace, output: Path) -> int:
                     scale_x = page_image.width / float(page.width)
                     scale_y = page_image.height / float(page.height)
                     x0_pt, x1_pt = column_bounds(float(page.width), caption_bbox)
-                    # Add a small column-side safety margin. Phase 0 values
+                    # Add a small column-side safety margin. Acquisition values
                     # completeness over tight crops; QA may subsequently trim
                     # whitespace, but must never recreate clipped labels.
                     safety_pt = min(5.0, float(page.width) * 0.009)
@@ -1281,6 +1480,7 @@ def materialize_into(args: argparse.Namespace, output: Path) -> int:
         "paper": paper_info,
         "targetCount": len(targets),
         "targets": targets,
+        "resourcePreflight": plan["resourceEstimate"],
         "integrity": {
             "algorithm": "sha256",
             "canonicalization": "json-sort-keys-v1",
@@ -1299,12 +1499,12 @@ def materialize(args: argparse.Namespace) -> int:
         not final_output.exists() or (final_output.is_dir() and not any(final_output.iterdir())),
         "output directory must be new or empty",
     )
-    preflight_acquisition(args)
+    plan = preflight_acquisition(args, final_output)
     final_output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{final_output.name}.staging-", dir=final_output.parent))
     committed = False
     try:
-        target_count = materialize_into(args, staging)
+        target_count = materialize_into(args, staging, plan)
         if final_output.exists():
             # The preflight guaranteed this is an empty directory.  Keep it in
             # place until every artifact and manifest hash has validated.
@@ -1332,6 +1532,14 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--image", action="append", default=[], type=Path, help="Uploaded target image; repeat for multiple images.")
     cli.add_argument("--uploaded-figure-refs", help="Optional comma-separated figure numbers matching repeated --image arguments.")
     cli.add_argument("--dpi", type=int, default=300, help="Normalization/rendering DPI (default: 300).")
+    cli.add_argument(
+        "--pdftoppm-executable", type=Path,
+        help="Absolute, non-symlinked path to a trusted pdftoppm executable; automatic lookup ignores PATH.",
+    )
+    cli.add_argument(
+        "--max-output-bytes", type=int,
+        help=f"Explicit finite acquisition preflight budget in bytes (default {DEFAULT_ACQUISITION_BUDGET_BYTES}; hard maximum {MAX_ACQUISITION_BUDGET_BYTES}).",
+    )
     cli.add_argument("--verify-manifest", type=Path, help="Mark reviewed target crops as verified instead of acquiring targets.")
     cli.add_argument("--verify-targets", help="Comma-separated target IDs that were visually reviewed.")
     cli.add_argument("--verify-all", action="store_true", help="Verify every manifest target after reviewing the complete set.")
@@ -1369,6 +1577,11 @@ def main() -> int:
             special_modes <= 1,
             "choose only one acquisition, subset, replacement, verification, or binding mode",
         )
+        if special_modes:
+            require(
+                args.pdftoppm_executable is None and args.max_output_bytes is None,
+                "renderer and acquisition-budget options apply only while acquiring a new target set",
+            )
         if args.derive_subset_manifest:
             require(
                 args.output is None and args.paper is None and not args.image and args.figures is None

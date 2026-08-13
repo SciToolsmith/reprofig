@@ -1,70 +1,51 @@
 # Permission gates
 
-Use this reference only when an action can change local or external state. Score each action independently; the effective level is the highest across access, cost, privacy, security, system mutation, external effect, and scientific impact.
+Apply this reference to the selected route and actions actually under consideration, not to hypothetical alternatives. Safe local work should proceed; ask only when the next useful action needs new authority or creates a material effect.
 
-## Pinned companion bootstrap exception
+## Automatic work
 
-The terminal schematic router has one standing exception before SciRepro Phase 0: when `sci-diagram-pptx` is absent, `ensure_diagram_companion.py` may install exactly the public, commit-pinned companion named in [diagram-handoff.md](diagram-handoff.md) into the user-level Codex skills directory without asking. It must use anonymous download, create only the missing destination, validate the installed identity, and record the source and commit. It must not overwrite, use credentials, install a runtime or system dependency, or authorize any SciDiagram execution effect. Any conflict or failure stops the handoff and SciRepro; this exception never generalizes to other skills or packages.
+Proceed without pausing for:
 
-## R0 — automatic read-only
+- reading user-supplied and relevant local artifacts;
+- public metadata/source lookup and other read-only investigation;
+- anonymous, verified public downloads up to 250 MiB total;
+- safe archive listing, hashing, and reviewed extraction;
+- a project-local open-source environment using up to 2 GiB of disk/cache without changing global packages;
+- reviewed, create-only local code expected to finish within 20 minutes, without GPU, payment, elevated privileges, or network after setup;
+- an already installed author-native runtime when use requires no login, activation, purchase, remote submission, uncertain shared license, or known uncontrolled startup effect;
+- new files inside a dedicated workspace and one non-existing final result path.
 
-- read supplied artifacts and local source text;
-- interpret targets and derive routes or validation criteria;
-- search public metadata and source pages;
-- query relevant versions, package/toolbox lists, licenses, hardware, free disk, and declared sizes.
+Use less than these ceilings when possible. A stricter user limit wins.
 
-## R1 — bounded automatic with provenance
+These are **declared planning bounds** unless the selected runner actually enforces them. Record measured usage separately. Never claim that network, runtime, disk, memory, GPU, or cost was constrained or observed merely because a contract declared a cap.
 
-Allowed in a dedicated workspace and inside the approved/default budget:
+## Ask for material authority
 
-- download small anonymous public resources from a verified source;
-- hash and safely inspect archives;
-- create a project-local open-source environment without changing global packages;
-- run reviewed, bounded smoke tests with no network after setup;
-- create the local report, approval receipt, and create-only outputs.
+Consolidate currently known related questions when practical. State the recommended action, affected targets and claim, exact effect/resource/access, expected duration or cost, rollback, and consequence of declining. Ask later if new evidence reveals a genuinely new material decision; earlier consent does not expand automatically.
 
-Apart from the single pinned companion bootstrap above, R1 never authorizes a global or user-level skill install, overwrite, unrestricted network execution, proprietary installation, or an unapproved reproduction run. Summarize bounded R0/R1 effects once in the approval receipt instead of repeating them in multiple decision cards.
+Ask before:
 
-## R2 — explicit confirmation
+- exceeding declared download, disk, memory, runtime, or cost bounds;
+- GPU/cloud credits, remote execution, clusters, or shared/floating/institutional licenses;
+- login, MFA, CAPTCHA, account creation, click-through terms, payment, VPN, controlled data, private repositories, or a DUA;
+- proprietary/system/global installation, activation, native binaries or install hooks with unclear effects, elevated containers, or privileges;
+- overwrite, upload, publication, redistribution, external messaging, or contacting authors/journals;
+- a material scientific choice between defensible routes, or a route change that alters data, formula, method, assumption, metric, or supported claim.
 
-- downloads, environments, CPU time, memory, or disk above the R1 budget;
-- GPU, shared-license use, network-enabled research execution, or long jobs;
-- native/system dependencies, elevated containers, unknown binaries, MEX files, or unclear licenses;
-- compatibility or parameter changes that may affect scientific meaning;
-- overwrite of an existing output.
+An installed proprietary runtime is not gated merely because it is proprietary. Establish whether bounded local use is already authorized; ask only when activation, shared licensing, remote submission, purchase, or uncertain startup effects matter.
 
-State the proposed action, source, size/runtime/cost, risk, rollback, affected targets and generation links, and what claim remains testable. Do not burden the user with irrelevant fields when these facts fit in a concise decision card.
+## Pinned diagram companion exception
 
-Investigate permission and resource details only far enough to determine whether the proposed route remains inside R1 or needs an R2/R3 decision. Do not audit unrelated actions merely because they could exist in another route.
+When the terminal router selects `sci-diagram-pptx` and no companion is installed, `ensure_diagram_companion.py` may automatically install only the public commit pinned in [diagram-handoff.md](diagram-handoff.md). This standing exception is limited to an anonymous download into an absent user-level destination. The helper must validate identity and provenance, create rather than overwrite, use no credentials, and fail closed on conflict or post-install validation failure. It may not install Python, Node, Office, fonts, system packages, or any companion runtime dependency.
 
-## R3 — user-held authority and itemized approval
+## Prohibited actions
 
-- login, MFA, CAPTCHA, account creation, click-through terms, or DUA;
-- payment, API/cloud credits, subscription, or institution-only access;
-- private repositories, VPN, controlled data, or ethics restrictions;
-- uploading paper/data/code, contacting authors, posting issues, cluster submission, publication, or redistribution.
+Block:
 
-The user performs authentication through the official path. Never request passwords or tokens in a report.
+- bypassing paywalls, DRM, CAPTCHA, access controls, license terms, or a DUA;
+- unauthorized credentials or disclosure of confidential, clinical, personal, unpublished, or controlled data;
+- persisting secrets in contracts, logs, parameters, or results;
+- privileged execution of untrusted code or broad/destructive deletion;
+- fabricated data, concealed assumptions, cherry-picked runs, or claims that appearance proves scientific reproduction.
 
-## R4 — block
-
-- bypassing paywalls, DRM, CAPTCHA, access controls, licenses, or DUA;
-- unauthorized credentials or disclosure of sensitive, confidential, clinical, personal, or unpublished data;
-- credential material in report prose or parameter values. Reject secret assignments, bearer/basic authorization values, and private-key blocks before report persistence and again at approval validation; store a credential-reference label only;
-- privileged execution of untrusted code or destructive/broad deletion;
-- fabricated data, concealed assumptions, or claims that visual similarity proves scientific reproduction.
-
-## What requires renewed approval
-
-Renew after a material change to target identity or hash, workflow mode, reproduction level, scientific claim, selected route, accepted assumption, restricted source, effect level, budget, or output/overwrite policy.
-
-Do not renew for harmless formatting, retrying an unchanged command inside the approved envelope, or substituting a byte-identical artifact. Approval permits actions and scope; validation evidence—not approval—determines scientific support.
-
-## Default R1 budget
-
-- anonymous public downloads: 1 GB total;
-- project-local environment/cache: 5 GB;
-- smoke test: 10 minutes per resource;
-- no GPU, payment, cloud quota, global install, overwrite, or unrestricted full run.
-
-Record actual use and stop before crossing a limit. User-supplied stricter limits take precedence.
+Ask genuine decisions concisely in chat and record the resulting scope with the run evidence.
