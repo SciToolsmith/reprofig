@@ -1,3 +1,5 @@
+# SciRepro
+
 <p align="center">
   <picture>
     <source media="(max-width: 640px)" srcset="docs/assets/scirepro-hero-mobile.en.svg">
@@ -36,30 +38,60 @@ Use $scirepro to reconstruct the visible curves, data, and layout in these image
 
 Every path first creates a `targets/` workspace with preserved sources, normalized PNGs, crop QA, and a hash manifest. Targets reliably matched to the paper and verified by QA use `scientific-reproduction`; images-only work uses the explicitly bounded `image-derived-reconstruction` mode.
 
-## What you receive
+## One path, minimum sufficient investigation
 
-- **Verified target set** — source, page or user label, crop metadata, QA status, and hash for every target.
-- **Local investigation report** — all target images, interpretations, generation chains, routes, gaps, and local capabilities in one page.
-- **Reproduction routes** — explicit data, methods, protocols, assumptions, gaps, local conditions, and scientific validation criteria.
-- **Traceable results** — rerunnable code, generated figures, configuration, validation results, logs, and provenance.
+SciRepro uses one reproduction workflow. It may answer a read-only question about meaning, generation logic, or likely feasibility directly; every request that actually reproduces or produces outputs follows the same path:
 
-## Report first. Execute second.
+```text
+verify targets → understand their evidence role → trace the generation chain
+→ form the minimum useful route → investigate decision-changing unknowns
+→ local web report → researcher approval → execution and scientific validation
+```
 
-**Before approval:** verify the targets, investigate evidence, formulate routes, and generate a local report. The report displays every reproduction target and separates what is verified, derivable, transparently assumable, and genuinely missing.
+Investigation is limited to questions that can change **route feasibility, the scientific claim that can be supported, material resource cost, or required permission**. It stops as soon as one route can test the stated objective at its declared reproduction level with explicit assumptions and acceptance criteria, or all defensible routes are blocked with concrete reasons. SciRepro does not keep searching for background completeness, inventory unrelated environments, or multiply routes that would not change the decision.
 
-**After approval:** execute only the selected figures and routes. If the data, algorithm, environment, budget, or supported claim changes materially, SciRepro stops and asks again.
+Published equations and parameters are primary evidence, not presumed truth. SciRepro independently derives or checks only the parts directly required by the target's generation chain and acceptance criteria, cross-checking definitions, units and dimensions, code, cited sources, and the observable figure. It does not audit unrelated equations across the whole paper, and it records every ambiguity, suspected error, correction, or code–paper discrepancy explicitly.
 
-## Two modes, two claim boundaries
+Login, payment, large downloads, GPU, overwrite, upload, and publication still require explicit approval. Every actual reproduction first produces a **local web decision report displaying all verified targets**.
+
+## One task, one result directory
+
+An approved run delivers exactly one `scirepro-run-<run-id>/`. Single- and multi-target runs use the same shape; optional empty directories are not created.
+
+```text
+scirepro-run-<run-id>/
+├── README.md              # Human entry: outcome, rerun steps, and limits
+├── manifest.json          # File hashes, statuses, provenance, and integrity
+├── report/                # Local result report required for complete/partial runs
+├── shared/                # Shared plan, environment, sources, code, config, logs
+└── targets/
+    └── <target-id>/
+        ├── result.json
+        ├── outputs/       # Reproduced figures and derived artifacts
+        ├── validation/    # Metrics, comparisons, and acceptance summary
+        └── derived/       # Digitized or image-derived data, when used
+```
+
+The bundle records three separate conclusions: **whether execution completed**, **whether validation passed**, and **whether the paper claim is supported**. “The code ran” therefore cannot silently become “the claim was reproduced.” A complete or partial run combines the pre-execution decision page with actual outcomes in the final local report. Failed, blocked, or cancelled work is not forced to carry an empty result page, but is still finalized as an inspectable diagnostic bundle.
+
+Execution always preserves an **untuned V0 baseline**. By default, SciRepro permits at most one evidence-based scientific correction and one presentation/readability repair, then stops as soon as the acceptance criteria are met; every third or later round requires a new testable scientific hypothesis and explicit round-specific approval. If a valid implementation still does not support the reported claim, SciRepro preserves the negative result instead of chasing pixel similarity, and never treats reproduction failure alone as proof of fabrication.
+
+<details>
+<summary><strong>Modes and rights boundaries</strong></summary>
+
+### Two modes, two claim boundaries
 
 - **With a paper: scientific reproduction.** Reconstruct the data–method–protocol–plot chain and validate predefined trends, peaks, frequencies, modes, statistics, or mechanism relationships.
 - **Images only: image-derived reconstruction.** Trace, digitize, fit visible geometry, or rebuild layout, but claim only visible geometry and appearance—not recovery of the original data, method, experiment, or paper conclusion.
 
 The local report must display every target directly. A public/shareable report embeds image bytes only when redistribution rights are verified; otherwise it shows a rights notice without exposing local paths or content.
 
+</details>
+
 <p align="center">
-  <a href="scirepro/SKILL.md#evidence-model">Reproduction levels</a> ·
-  <a href="scirepro/SKILL.md#approval-gate">Approval boundary</a> ·
-  <a href="scirepro/SKILL.md#deliverables">Complete deliverables</a>
+  <a href="scirepro/SKILL.md#evidence-and-route-model">Reproduction levels</a> ·
+  <a href="scirepro/SKILL.md#permissions-and-approval">Approval boundary</a> ·
+  <a href="scirepro/references/run-bundle-contract.md">Run-bundle contract</a>
 </p>
 
 <details>

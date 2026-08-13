@@ -383,6 +383,18 @@ a.evidence-ref:hover { text-decoration: underline; }
 .unknowns { border: 1px solid #ebd4a7; background: var(--amber-soft); }
 .plot-mapping p { margin: 6px 0 0; }
 
+.formula-audit { margin-top: 16px; padding: 16px; border: 1px solid #d9d2f4; border-radius: 10px; background: var(--purple-soft); }
+.formula-audit-rationale { margin: 6px 0 12px; color: var(--soft); }
+.formula-audit > .compact-field + .compact-field { margin-top: 9px; }
+.formula-audit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 10px; margin-top: 14px; }
+.formula-check-card { padding: 14px; border: 1px solid #d9d2f4; border-radius: 9px; background: white; }
+.formula-check-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.formula-status, .formula-decision { display: inline-flex; padding: 3px 7px; border-radius: 999px; font-size: 9px; font-weight: 720; }
+.formula-status { color: var(--purple); background: var(--purple-soft); }
+.formula-decision { color: var(--blue); background: var(--blue-soft); }
+.formula-check-card h4 { margin: 9px 0 12px; }
+.formula-check-card .compact-field + .compact-field { margin-top: 9px; }
+
 .encoding-list, .scope-pills, .deliverable-list, .pill-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .text-pill, .muted-pill {
   display: inline-flex;
@@ -490,7 +502,7 @@ a.evidence-ref:hover { text-decoration: underline; }
 .appendix-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .appendix-item { padding: 10px 12px; border-radius: 8px; background: var(--page); }
 .appendix-item strong { display: block; }
-.appendix-item small { color: var(--muted); }
+.appendix-item small { display: block; color: var(--muted); }
 .appendix-manifest { margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcfd; }
 .appendix-manifest code, .appendix-hash-row code, .appendix-artifact-hash code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

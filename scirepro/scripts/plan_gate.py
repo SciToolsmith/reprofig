@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 
 from build_report import MAX_ASSET_BYTES
 from build_report import ReportError as ReportValidationError
-from build_report import load_target_manifest, sha256_file, validate_report, validate_sanitized_png
+from build_report import load_target_manifest, require_secret_free, sha256_file, validate_report, validate_sanitized_png
 
 
 class GateError(ValueError):
@@ -92,11 +92,41 @@ def validate_parameter(spec: dict, value: object) -> None:
         require(isinstance(value, str) and safe_relative(value), f"{spec['parameterId']}: unsafe relative path")
     else:
         raise GateError(f"{spec['parameterId']}: unsupported parameter type")
+    if isinstance(value, str):
+        try:
+            require_secret_free(value, f"{spec['parameterId']}: value")
+        except ReportValidationError as exc:
+            raise GateError(str(exc)) from exc
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if "min" in spec:
             require(value >= spec["min"], f"{spec['parameterId']}: below minimum")
         if "max" in spec:
             require(value <= spec["max"], f"{spec['parameterId']}: above maximum")
+
+
+def requirement_can_run(requirement: dict) -> bool:
+    """Return whether a requirement is concrete enough for execution."""
+    state = requirement.get("state")
+    if state in {"verified", "not-required"}:
+        return True
+    if state in {"derivable", "assumable"}:
+        resolution = requirement.get("resolution")
+        expected = {"derivable": "frozen", "assumable": "accepted"}[state]
+        return (
+            isinstance(resolution, dict)
+            and resolution.get("status") == expected
+            and isinstance(resolution.get("basis"), str)
+            and bool(resolution["basis"].strip())
+        )
+    return False
+
+
+def estimate_is_bounded(route: dict) -> bool:
+    estimate = route.get("estimated")
+    return isinstance(estimate, dict) and all(
+        estimate.get(field) is not None
+        for field in ("downloadBytes", "diskBytes", "runtimeMinutes", "costUsd")
+    )
 
 
 def main() -> int:
@@ -116,6 +146,10 @@ def main() -> int:
         approval = json.loads(args.approval.read_text(encoding="utf-8"))
         require(isinstance(report, dict), "report must be an object")
         require(isinstance(approval, dict), "approval must be an object")
+        try:
+            require_secret_free(approval, "approval")
+        except ReportValidationError as exc:
+            raise GateError(str(exc)) from exc
         schema_version = report.get("schemaVersion")
         require(
             schema_version == "reprofig.report/v3",
@@ -250,15 +284,20 @@ def main() -> int:
             route = routes[route_id]
             require(route.get("status") != "blocked", f"{figure_id}: blocked route cannot be approved")
             require(not route.get("blockers"), f"{figure_id}: a route with blockers cannot be approved")
+            require(estimate_is_bounded(route), f"{figure_id}: selected route has an unbounded resource estimate")
             requirements = {item["requirementId"]: item for item in figure.get("requirements", [])}
-            referenced_requirement_states = set()
+            referenced_requirements = []
             for requirement_id in route.get("requirementIds", []):
                 requirement = requirements.get(requirement_id)
                 require(requirement is not None, f"{figure_id}: unknown route requirement")
                 require(requirement.get("blocking") is not True, f"{figure_id}: route references a blocking requirement")
-                referenced_requirement_states.add(requirement.get("state"))
+                referenced_requirements.append(requirement)
 
             route_effects = set(route.get("effects", []))
+            require(
+                not route.get("deliverables") or "create-workspace-files" in route_effects,
+                f"{figure_id}: selected route deliverables require create-workspace-files",
+            )
             environments = {item["environmentId"]: item for item in report.get("environment", [])}
             referenced_environments = [
                 environments[environment_id]
@@ -266,11 +305,11 @@ def main() -> int:
                 if environment_id in environments
             ]
             referenced_environment_states = {environment["status"] for environment in referenced_environments}
+            require(
+                all(requirement_can_run(requirement) for requirement in referenced_requirements),
+                f"{figure_id}: selected route contains an unresolved requirement",
+            )
             if route.get("status") == "ready":
-                require(
-                    referenced_requirement_states <= {"verified", "not-required"},
-                    f"{figure_id}: ready route depends on derivation, assumptions, or missing conditions",
-                )
                 require(
                     referenced_environment_states <= {"verified"},
                     f"{figure_id}: ready route references an environment without route-level verification",
@@ -331,16 +370,34 @@ def main() -> int:
             require(bool(explicit_files), "overwrite-approved requires explicit files")
             require(len(explicit_files) == len(set(explicit_files)), "duplicate explicit overwrite path")
 
+        selected_targets = []
+        for selection in selections:
+            figure = figures[selection["figureId"]]
+            target = figure["target"]
+            selected_targets.append({
+                "figureId": selection["figureId"],
+                "targetId": target["targetId"],
+                "targetSha256": target["targetSha256"],
+                "workflowMode": target["workflowMode"],
+                "routeId": selection["routeId"],
+                "parameters": dict(selection["parameters"]),
+                "deliverables": list(selection["deliverables"]),
+            })
+
         print(json.dumps({
+            "schemaVersion": "scirepro.gate-result/v1",
             "status": "valid",
             "reportId": report["reportId"],
             "reportSha256": expected_hash,
             "targetManifestSha256": target_manifest["integrity"]["manifestSha256"],
             "approvalId": approval_id,
+            "approvalSha256": sha256_file(args.approval),
             "idempotencyKey": idempotency_key,
             "replayProtection": "not-enforced-by-stateless-validator",
             "selectedFigures": figure_ids,
+            "selectedTargets": selected_targets,
             "authorizedEffects": sorted(authorized),
+            "outputPolicy": output,
         }, ensure_ascii=False, indent=2))
         return 0
     except (OSError, UnicodeError, json.JSONDecodeError, GateError, ReportValidationError, KeyError, AttributeError, TypeError, ValueError, OverflowError, RecursionError) as exc:

@@ -1,76 +1,66 @@
 # Permission gates
 
-Score each action independently. The effective level is the highest level across access, cost, privacy, security, external effects, system mutation, and scientific-claim impact.
+Use this reference only when an action can change local or external state. Score each action independently; the effective level is the highest across access, cost, privacy, security, system mutation, external effect, and scientific impact.
 
 ## R0 — automatic read-only
 
-- read supplied paper and images;
-- interpret figure semantics, panels, visual encodings, and the figure's role in the paper's evidence chain;
-- reconstruct an explicit input-to-figure generation chain, derive candidate routes, and define scientific validation targets;
-- inspect local source text;
+- read supplied artifacts and local source text;
+- interpret targets and derive routes or validation criteria;
 - search public metadata and source pages;
-- query versions, package lists, licenses, hardware, and free disk;
-- estimate download and compute size.
+- query relevant versions, package/toolbox lists, licenses, hardware, free disk, and declared sizes.
 
 ## R1 — bounded automatic with provenance
 
-Allowed only inside a dedicated investigation workspace and within the declared budget:
+Allowed in a dedicated workspace and inside the approved/default budget:
 
-- download small publicly accessible resources with clear provenance;
-- compute hashes and inspect archives;
-- create an isolated open-source environment;
-- run reviewed smoke tests with time, memory, disk, and network bounds;
-- create a static local report and approval draft.
+- download small anonymous public resources from a verified source;
+- hash and safely inspect archives;
+- create a project-local open-source environment without changing global packages;
+- run reviewed, bounded smoke tests with no network after setup;
+- create the local report, approval receipt, and create-only outputs.
 
-Do not modify a global environment, overwrite user files, or run a full reproduction under R1.
+R1 never authorizes a global install, overwrite, unrestricted network execution, proprietary installation, or an unapproved reproduction run. Summarize bounded R0/R1 effects once in the approval receipt instead of repeating them in multiple decision cards.
 
-## R2 — explicit confirmation before action
+## R2 — explicit confirmation
 
-- downloads or environments above the R1 budget;
-- long CPU jobs, GPU use, large memory/disk use, or shared license consumption;
-- network-enabled execution of research code;
-- native/system dependencies, containers requiring elevated access, unknown binaries or MEX files;
-- unclear license;
-- compatibility patch that may change scientific semantics;
-- overwriting existing outputs.
+- downloads, environments, CPU time, memory, or disk above the R1 budget;
+- GPU, shared-license use, network-enabled research execution, or long jobs;
+- native/system dependencies, elevated containers, unknown binaries, MEX files, or unclear licenses;
+- compatibility or parameter changes that may affect scientific meaning;
+- overwrite of an existing output.
 
-Present a decision card with action, reason, source, license, download size, disk use, estimated runtime, cost, risks, rollback, recommended alternative, affected generation-chain links, and the scientific claim that would remain testable.
+State the proposed action, source, size/runtime/cost, risk, rollback, affected targets and generation links, and what claim remains testable. Do not burden the user with irrelevant fields when these facts fit in a concise decision card.
+
+Investigate permission and resource details only far enough to determine whether the proposed route remains inside R1 or needs an R2/R3 decision. Do not audit unrelated actions merely because they could exist in another route.
 
 ## R3 — user-held authority and itemized approval
 
-- login, MFA, CAPTCHA, account creation, or accepting click-through terms/DUA;
-- payment, cloud/API credits, subscriptions, or institution-only access;
-- private repository, VPN, controlled data, IRB/ethics conditions;
-- uploading the paper, data, or code to a third party;
-- contacting authors, posting an issue, submitting a cluster job, publishing a website, or redistributing code/data/images.
+- login, MFA, CAPTCHA, account creation, click-through terms, or DUA;
+- payment, API/cloud credits, subscription, or institution-only access;
+- private repositories, VPN, controlled data, or ethics restrictions;
+- uploading paper/data/code, contacting authors, posting issues, cluster submission, publication, or redistribution.
 
-Never ask the user to paste passwords or tokens into the report. Direct them to the official authentication path.
+The user performs authentication through the official path. Never request passwords or tokens in a report.
 
 ## R4 — block
 
-Block:
+- bypassing paywalls, DRM, CAPTCHA, access controls, licenses, or DUA;
+- unauthorized credentials or disclosure of sensitive, confidential, clinical, personal, or unpublished data;
+- credential material in report prose or parameter values. Reject secret assignments, bearer/basic authorization values, and private-key blocks before report persistence and again at approval validation; store a credential-reference label only;
+- privileged execution of untrusted code or destructive/broad deletion;
+- fabricated data, concealed assumptions, or claims that visual similarity proves scientific reproduction.
 
-- bypassing paywalls, DRM, CAPTCHA, or access controls;
-- unauthorized credentials or license/DUA violations;
-- disclosure of sensitive, confidential, clinical, personal, or unpublished data;
-- root or privileged execution of untrusted code;
-- destructive deletion or broad overwrite;
-- fabricated data, omitted assumptions, or claiming visual similarity as scientific reproduction.
+## What requires renewed approval
 
-## Scientific route gate
+Renew after a material change to target identity or hash, workflow mode, reproduction level, scientific claim, selected route, accepted assumption, restricted source, effect level, budget, or output/overwrite policy.
 
-Treat a change among `direct-recompute`, `mechanism-reproduction`, `alternative-validation`, `editable-reconstruction`, and `original-case-blocked` as a material plan change. Never downgrade silently. State what the new route can and cannot support, then request a new approval.
+Do not renew for harmless formatting, retrying an unchanged command inside the approved envelope, or substituting a byte-identical artifact. Approval permits actions and scope; validation evidence—not approval—determines scientific support.
 
-Approval authorizes actions and scope; it does not establish scientific validity. Scientific support is determined only by execution evidence evaluated against the predefined validation criteria.
+## Default R1 budget
 
-## Default budget
-
-Unless the user supplied another budget:
-
-- public downloads: 1 GB total;
-- isolated environment/cache: 5 GB;
+- anonymous public downloads: 1 GB total;
+- project-local environment/cache: 5 GB;
 - smoke test: 10 minutes per resource;
-- full reproduction during investigation: prohibited;
-- GPU, paid services, cloud quota, and global install: prohibited.
+- no GPU, payment, cloud quota, global install, overwrite, or unrestricted full run.
 
-Record actual usage and stop before crossing a limit.
+Record actual use and stop before crossing a limit. User-supplied stricter limits take precedence.

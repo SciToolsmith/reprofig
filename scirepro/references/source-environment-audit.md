@@ -1,100 +1,100 @@
 # Source and environment audit
 
-## Purpose and timing
+Use this audit only when a candidate route depends on external code/data or uncertain local capability. Start from route requirements; do not inventory unrelated software, hardware, repositories, or datasets.
 
-Use this audit only after Phase 0 has produced verified targets and candidate routes are understood. For `scientific-reproduction`, first establish the target's scientific meaning, paper-evidence role, generation chain, and validation target. For `image-derived-reconstruction`, audit only the tools and dependencies needed for the declared digitization, tracing, layout, or appearance route; do not search for evidence that the image alone cannot supply.
+## Source authority and record
 
-Start from candidate-route requirements. Audit relevant sources and local capabilities thoroughly enough to avoid false negatives, but do not inventory unrelated software, hardware, repositories, or datasets. Return every finding to a generation-chain link, route decision, or validation condition.
+Prefer: user artifact → author/publisher/official project → institution/funder repository → paper-cited repository → verified archive → labeled third-party source.
 
-## Establish source authority
+For each relevant source, record authority, URL, version/commit, checked date, access state, declared/local size, SHA-256, license, and redistribution status. A local archived artifact may coexist with an upstream `login-required` state. Public visibility does not imply a license.
 
-Use this priority order:
+## Code audit
 
-1. user-provided artifact;
-2. author, publisher, or official project page;
-3. institution or funder repository;
-4. repository cited by the paper;
-5. archival service with author/version evidence;
-6. third-party port or mirror, explicitly labeled.
+1. Retrieve only from a verified public route and within budget, unless separately approved.
+2. Preserve and hash the original. List an archive before extraction; reject absolute paths, `..`, device files, and suspicious links.
+3. Read the license, dependency declarations, public entry point, key implementation, defaults, randomness, I/O, network/system effects, install hooks, native binaries, unsafe deserialization, and telemetry relevant to the route.
+4. Map interfaces and key source to generation-chain links; label origins `paper`, `code`, `derived`, `assumption`, or `user`.
+5. After static inspection, run only the smallest useful smoke test in a temporary directory with bounded resources and no network after setup. Record command, environment, exit code, runtime, output shape/type, and errors. Do not call it figure reproduction.
 
-For each source, record author/publisher, URL, version or commit, checked date, access state, declared size, local size, SHA-256, license, and whether redistribution is permitted. Treat `access.state` as the current upstream retrieval or reacquisition status; a verified `artifact` separately records that a local copy is already present. For example, a local archived ZIP may coexist with `access.state: login-required` when a fresh upstream download requires sign-in. Use `local` for a user/local-only source without a separately verified retrieval route. A GitHub repository without a license is readable but not automatically reusable or redistributable.
+Use `<skill-root>/scripts/inspect_artifact.py` for the initial inventory. Stop once enough evidence exists to accept, reject, or condition the route.
 
-## Inspect code before execution
+### Formula, parameter, and implementation correspondence
 
-1. Download only through a verified public route within budget.
-2. Preserve the original archive and compute SHA-256.
-3. List archive entries without extracting first. Reject absolute paths, `..`, device files, and suspicious links.
-4. Find the license and distinguish use permission from redistribution permission.
-5. Read the public entry point, key algorithm implementation, dependency declarations, defaults, randomness, file/network/system operations, unsafe deserialization, native binaries, MEX files, install hooks, and telemetry.
-6. Map relevant entry points, function inputs and outputs, defaults, and file interfaces to the figure's explicit generation-chain stages. Use the schema origins `paper`, `code`, `derived`, `assumption`, or `user` for documented links. Put uncovered links in `generationLogic.unknowns` and, when they constrain a route, in a `missing` requirement or route blocker.
-7. Run a bounded smoke test only after static inspection. Use a temporary directory, non-root execution, resource limits, and no network after environment setup.
-8. Record exact command, exit code, runtime, output shape/type, and errors. Describe it as a smoke test, not figure reproduction.
+Audit correspondence only for code paths and mathematical dependencies that can change the selected target or its acceptance result. Do not turn figure reproduction into a review of every equation or source file.
 
-If no compatible runtime exists:
+- Map each relevant paper expression or parameter to the actual entry point, update rule, default, preprocessing step, and plotted output that implements it.
+- Treat paper values as claims to check. Verify relevant units, dimensions, matrix shapes, indexing, normalization, boundary cases, and admissible ranges before using them.
+- Compare paper text, appendices, cited primary sources, code defaults, examples, and the target figure's axes and trend. Distinguish a documentation mismatch from an algorithmic difference.
+- If the code and paper are materially different, preserve both readings. Create separate routes when each is testable and bind them structurally as `paper-formula` and `code-implementation`; make their scientific scopes distinct. Otherwise block every route affected by the unresolved difference. Never keep a different non-blocked route as an implicit choice under the same divergence finding.
+- Never silently patch an expression, alter a default, select favorable results, or tune toward the published curve. Preserve any correction or compatibility patch as a traceable overlay with its scientific impact.
 
-- For open-source ecosystems, first search existing environments; then create a project-local isolated environment within budget.
-- For proprietary runtimes, do not download installers, accept terms, or consume shared licenses automatically. Complete static inspection and mark execution verification unavailable.
-- Treat an open-source alternative as a separate route. Do not imply numerical equivalence without validation.
+## Data identity
 
-Use `scripts/inspect_artifact.py` to create the initial artifact inventory.
+Do not accept a dataset by topic or filename alone. Match the paper case using DOI/authors/experiment, variables and units, sample count/rate/duration, channels or specimen/device IDs, split/segment, preprocessing/calibration, version, checksums, license, and restrictions.
 
-Map environment findings into the report conservatively:
-
-- use `verified` only after the exact route-required executable, packages/toolboxes/functions, license, and hardware capability have passed a live probe;
-- use `available` when static inspection finds an installation or candidate runtime but does not establish route-level execution capability;
-- use `unknown` when inspection is inconclusive and `missing` only after the documented search finds no candidate;
-- mark proprietary, institutional, licensed, hardware-bound, or user-provided runtimes as `existing-only`;
-- mark only project-locally installable open-source stacks as `isolated-open-source`.
-
-An `available` environment can support only a `conditional` route. An unresolved `existing-only` environment blocks execution; do not convert it into an installation plan. An unresolved `isolated-open-source` environment may remain conditional only with an explicit gated `install` effect.
-
-## Verify data identity
-
-Do not accept a dataset merely because its topic or filename is similar. First identify which generation-chain stage and target observation require it, then compare:
-
-- paper title, DOI, authors, experiment name, and repository citation;
-- variables, units, sample count, sampling rate, duration, channels, subject/device/specimen IDs;
-- train/test split, selected segment, preprocessing, calibration, missing-value policy;
-- archive contents, checksums, version, license, and access restrictions.
-
-Classify data as:
-
-- exact original input;
-- official example likely corresponding to the case, with stated confidence;
-- paper-defined simulation that can be generated independently;
-- substitute dataset suitable only for alternative validation;
-- not found, request-required, controlled, or restricted.
-
-Before download, obtain size from HTTP headers, repository metadata, manifests, or file listings. Ask before large data, login, DUA, payment, private access, or a download above the approved threshold. If possible, inspect metadata or a manifest without downloading the payload.
+Classify it as exact original input, official example with stated confidence, paper-defined simulation, substitute data for alternative validation, or unavailable/request-required/restricted. Determine payload size from metadata or headers before download. Ask before large, login-gated, controlled, paid, private, or over-budget retrieval.
 
 ## Avoid environment false negatives
 
-Probe the engines, packages, toolboxes, licenses, and hardware required by candidate routes. Call `probe_environment.py` with explicit route-specific `--runtime` values; its default is Python, and `--runtime all` is reserved for an explicitly requested inventory. Do not conclude “not installed” from one `which` or import failure, and do not perform a broad machine inventory unrelated to those routes.
+Probe only engines, packages/toolboxes, functions, licenses, and hardware required by candidate routes. Use `<skill-root>/scripts/probe_environment.py` with explicit `--runtime`; reserve `--runtime all` for a requested inventory. Automatic Python discovery is static-only and must never launch a PATH, Conda, or workspace candidate.
 
-### General sequence
+Check, in order:
 
-1. Check current PATH and shell aliases/functions.
-2. Check standard OS application and executable locations.
-3. Query product-specific launchers and package managers.
-4. Enumerate isolated environments.
-5. Probe candidate executables directly by absolute path.
-6. Verify the required package, toolbox, function, license, and hardware—not only the base executable.
-7. Report `unknown` when access or probing is inconclusive.
+1. active/current interpreter or executable and project configuration;
+2. PATH plus shell aliases/functions and standard OS application locations;
+3. project-local `.venv`, Conda/virtualenv/pyenv/uv/Poetry environments and product launchers;
+4. candidate executables by absolute path;
+5. exact package/toolbox/function, license, and hardware capability.
 
-### Python
+Do not infer absence from one failed `which`, import, or launcher probe. Use:
 
-Check the active interpreter, `python`, `python3`, Conda environments, virtualenvs, pyenv, uv, Poetry, and project-local environments. Probe imports in each candidate interpreter. Prefer an existing compatible environment; otherwise create a new project-local environment without changing global packages.
+- `verified` only after the exact route-required capability succeeds in the current interpreter or a deliberately selected, safely audited project environment;
+- `available` when static inspection finds a candidate but route-level execution remains untested;
+- `unknown` when probing is inconclusive;
+- `missing` only after the documented relevant search finds no candidate.
+
+Keep evidence certainty separate from execution readiness. A statically available runtime may leave a route `conditional`; a verified runtime does not repair missing data or method evidence.
+
+When promoting a route environment to `verified`, save a redacted route-specific probe result as a local file, hash it, and declare it as an `environment-audit` source artifact. Reference that source from the environment. Do not use the paper, a documentation page, or a bare executable path as proof that the required runtime/toolbox/license capability actually ran.
+
+### Python and open-source ecosystems
+
+First inspect the current interpreter and existing project-local environments without modifying them. Finding an interpreter is only `available`. To live-probe an interpreter the user or approved route deliberately selected, pass its absolute path explicitly:
+
+```bash
+python <skill-root>/scripts/probe_environment.py \
+  --workspace <task-workspace> \
+  --runtime python \
+  --python-executable /absolute/path/to/python \
+  --output <task-workspace>/environment-audit.json
+```
+
+The selected launcher may be a regular native executable or a symlink resolving to one. SciRepro records the launcher and resolved native binary as separate redacted identities. Script/shim targets and broken or non-regular targets are rejected before execution when their file type can be established.
+
+For a workspace virtual environment, add the separate explicit gate `--allow-workspace-python`. The launcher must have the standard `<venv>/bin/python*` or `<venv>/Scripts/python*.exe` shape and `<venv>/pyvenv.cfg` must be a regular non-symlink file. This establishes only a static PEP 405 identity. Without the gate, workspace executables remain static-only; do not add the gate merely because discovery found one.
+
+Every explicit Python probe uses `-I -S`, a minimal allowlisted environment, and a 60-second maximum timeout. `-S` is mandatory: it prevents `site`, `sitecustomize.py`, `.pth` processing, and site-packages from running. The probe performs no install, global mutation, or network request. A failed or malformed probe stays `failed`, never `verified`, and its evidence remains redacted.
+
+Because `-S` also suppresses PEP 405 activation on supported Python versions, a selected venv reports two deliberately separate facts: `pep405Identity.status: detected-static` and `binaryProbeStatus: verified-no-site`. Keep its overall `verificationStatus: available`, `verified: false`, `siteRuntimeVerified: false`, and `packagesVerified: false`. Do not treat the marker detection or no-site binary start as proof that the venv, its packages, or its `sitecustomize`-affected runtime works.
+
+This probe verifies the interpreter and isolation flags only. Promote a route environment to `verified` only after separate bounded checks also establish its exact route imports/functions and basic invocation; merely finding its directory or passing the interpreter probe is insufficient.
+
+Prefer a compatible existing environment. If none works, create a new project-local isolated environment within the R1 budget; never change global packages. Treat packages with native install hooks or unknown binaries according to their higher permission level.
 
 ### MATLAB
 
-Check PATH plus standard application locations such as macOS `/Applications/MATLAB_R*.app/bin/matlab`, Windows Program Files, and common Linux install roots. `probe_environment.py --runtime matlab --probe-matlab` reads static release metadata only and is safe for Phase 1; it records installation and metadata detection separately from runtime verification, does not launch MATLAB, and does not verify licensing. Launching an absolute-path batch probe to obtain the live version, toolbox inventory, `license('test', ...)`, or required function locations can execute startup configuration or consume a shared license. Treat that as a separately approved R2 investigation action and log the decision; when a floating or institutional license may be consumed, also declare `shared-license` on any execution route that needs it. Do not infer absence from PATH alone. Do not install MATLAB or accept a MathWorks license automatically.
+Check PATH and standard application locations such as macOS `/Applications/MATLAB_R*.app/bin/matlab`, Windows Program Files, and common Linux roots. Static release detection is `available + existing-only`, not verified.
 
-In report terms, static MATLAB detection is `available + existing-only`, never `verified`. Promote it to `verified` only after the separately approved live probe establishes the exact capabilities required by the selected route.
+A live batch probe can execute startup configuration or consume a shared license. Treat it as R2 when license consumption, startup effects, or institutional access may occur. Verify version, required toolboxes/functions, and `license('test', ...)`; do not install MATLAB or accept terms automatically. If a user says MATLAB exists after an inconclusive probe, search direct application paths before reporting `missing`.
 
-### Other proprietary tools
+### Other proprietary tools and hardware
 
-For COMSOL, Abaqus, ANSYS, Mathematica, LabVIEW, Origin, and similar systems, verify executable, version, license availability, required modules, and noninteractive support. Installation, activation, shared-license consumption, and remote cluster submission require explicit approval.
+For COMSOL, Abaqus, ANSYS, Mathematica, LabVIEW, Origin, and similar tools, verify executable, version, required modules, license availability, and noninteractive support. Installation, activation, shared-license use, or remote submission requires approval.
 
-### Hardware
+Record CPU architecture, RAM, free disk, and route-required GPU/driver/runtime. Do not use cloud services or shared clusters without separate approval.
 
-Record CPU architecture, RAM, free disk, GPU model/driver/runtime, and whether the approved job fits local resources. Do not use cloud services or shared clusters without separate approval.
+## If no compatible runtime exists
+
+- For open-source routes, propose or create a project-local environment within budget.
+- For proprietary routes, complete static inspection and mark execution verification unavailable; do not silently install or substitute.
+- Offer an open-source implementation only as a separate evidence-backed route. Do not imply numerical equivalence without validation.

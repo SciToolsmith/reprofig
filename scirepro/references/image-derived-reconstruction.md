@@ -68,4 +68,4 @@ The local report must display every verified target. It should show the reconstr
 
 ## Handoff
 
-Deliver the target workspace, derived measurements, reconstruction source, outputs, comparison/overlay artifacts, uncertainty notes, environment record, and provenance. Keep image-derived results separate from any later paper-grounded reproduction run.
+Deliver one terminal run bundle governed by [run-bundle-contract.md](run-bundle-contract.md). Put derived measurements, reconstruction source, outputs, labelled comparison/overlay artifacts, uncertainty notes, environment evidence, and provenance in its declared shared/per-target locations. Keep image-derived results separate from any later paper-grounded reproduction run, and reference restricted target bytes instead of redistributing them in a shareable bundle.

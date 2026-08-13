@@ -1,127 +1,112 @@
 # Target figure acquisition
 
-## Purpose
-
-Phase 0 turns every requested reproduction object into a stable, reviewable target before scientific interpretation or feasibility assessment. Use the same target workspace whether the user supplies images, names figures in a paper, or supplies images without a paper.
-
-Do not use screenshots scattered across temporary directories. Do not treat an automatically detected crop as verified until it has been visually inspected.
+Phase 0 gives every requested object a stable target ID, normalized image, hash, provenance, and review state before scientific assessment. All entry paths accept one or many targets.
 
 ## Three entry paths
 
-All paths accept one or many targets.
-
 ### Paper plus uploaded images
 
-- Preserve every supplied paper and image byte-for-byte in the investigation workspace.
-- Normalize each target image to a metadata-minimized PNG without changing aspect ratio.
-- When the user supplies figure references, bind them in order to the uploaded images.
-- When references are absent, compare each image against the paper, caption, panels, and nearby text during QA. Do not infer identity from filename alone.
-- Assign workflow mode `scientific-reproduction` only after a reliable paper match. Reject or leave ambiguous unmatched images rather than silently associating them.
+- Preserve every supplied paper and image byte-for-byte; normalize images to metadata-minimized PNG without changing aspect ratio.
+- Match each image to the paper through caption, panels, axes, labels, and nearby text. Filename alone is insufficient.
+- Assign `scientific-reproduction` only after a reliable paper binding. Otherwise keep the item pending or use an explicitly limited image-derived route.
 
 ### Paper plus figure references
 
-- Accept individual references, lists, and ranges such as `1,3,5-8`.
-- Locate each figure caption in the supplied paper and render the source page at high resolution.
-- Crop the complete figure as one artifact: all panels, legends, labels, annotations, figure number, and the complete caption, including wrapped lines.
-- Exclude unrelated body text, headers, footers, and neighboring figures.
-- Preserve the page number, crop box, render DPI, extracted caption, paper hash, and QA overlay.
-- If a reference is absent, duplicated, ambiguous, or spans pages in a way the extractor cannot resolve safely, stop and perform a reviewed manual crop. Never guess.
+- Treat requested labels as opaque user identifiers. Accept numeric lists/ranges and free text such as `Fig. 2a`, `S3`, `Extended Data 4`, `图 5`, or a panel description.
+- Use automatic extraction only when the bundled tool parses the identifier and finds one unambiguous complete caption/crop.
+- Crop the graphic, every panel/legend/label/annotation, figure number, and complete wrapped caption; exclude unrelated prose and neighboring figures.
+- If automatic extraction cannot represent the label, caption location, cross-page object, or layout safely, create a reviewed manual crop. Preserve the original label, paper/page/caption binding, crop provenance, and QA evidence; never coerce it into a different numeric reference.
 
 ### Images only
 
-- Preserve and normalize every supplied image.
-- Assign workflow mode `image-derived-reconstruction`.
-- Describe target identity from user labels and visible content only.
-- Do not manufacture a paper citation, caption, evidence role, original data source, method, or scientific claim.
+- Preserve and normalize every image; use user labels and visible content for identity.
+- Assign `image-derived-reconstruction`. Do not manufacture a paper citation, original method/data, evidence role, or scientific claim.
 
-## Target workspace
+## Workspace and identity
 
-Create a new or empty directory for each target set:
+Create a new/versioned directory; never overwrite an earlier target set:
 
 ```text
 targets/
-├── originals/       # byte-preserved paper/images supplied for acquisition
-├── figures/         # normalized target PNGs
-├── qa/              # rendered-page crop overlays and review evidence
+├── originals/       # byte-preserved supplied sources
+├── figures/         # normalized PNG targets used by report/analysis
+├── qa/              # page/crop overlays and review evidence
 └── manifest.json    # scirepro.targets/v1
 ```
 
-Do not overwrite an earlier target set. Use a new target-set ID or versioned directory when the paper, images, target references, crop, or normalization changes.
+For each target record acquisition/workflow mode, requested label, stable ID, paper/page/caption when known, normalized relative path/media type, source and target SHA-256, dimensions/DPI/crop box, caption inclusion, QA status/notes, and local/redistribution status.
 
-Each target must have a unique stable ID. The manifest must record at least:
+The normalized target hash is the report and approval identity. A later sanitized or public asset has its own asset hash and never replaces the target hash.
 
-- acquisition and workflow modes;
-- the user's requested label or figure reference;
-- paper identity and page when applicable;
-- extracted caption when applicable;
-- normalized relative path and PNG media type;
-- source and normalized SHA-256 hashes;
-- pixel dimensions, DPI, and crop box when applicable;
-- whether the caption is included;
-- QA status and review notes;
-- local-analysis and redistribution status.
+## Visual QA and partial admission
 
-Treat the normalized target hash as the target identity used by the report and approval gate. A later bundled or sanitized asset may have a different hash; never substitute that asset hash for the target hash.
+Inspect every target at readable resolution and compare paper crops with their page overlay. Mark:
 
-## Visual QA
+- `verified`: correct requested object; all relevant panels, legends, axes, labels, annotations, figure number/caption when requested, readable pixels, preserved aspect ratio, and matching hash;
+- `pending`: plausible but unreviewed, ambiguous, incomplete, unmatched, or awaiting a manual replacement;
+- `rejected`: confirmed incorrect target or unusable crop, with reason.
 
-Inspect every target at readable resolution. For paper extractions, inspect the crop overlay against the rendered page.
+Assessment may continue for any verified subset. Pending/rejected targets stay in the original manifest and in a separate local acquisition summary beside the report or in chat; they do not block unrelated verified targets. The current report and approval schemas bind only admitted verified target IDs/hashes. Never execute pending or rejected targets.
 
-Mark a target `verified` only when:
-
-- it is the requested figure;
-- all panels and panel labels are present;
-- all plot legends, color bars, annotations, and axes are present;
-- the figure number and complete caption are present when paper extraction is requested;
-- no neighboring figure or unrelated prose is included;
-- text remains readable and aspect ratio is preserved;
-- its file exists and matches the recorded hash.
-
-Use `needs-review` for a plausible but unreviewed target and `rejected` for an incorrect or incomplete target. Do not begin assessment while any requested target is missing, ambiguous, rejected, or unverified.
+If a replacement changes pixels, preserve the former acquisition in provenance, refresh hashes, and return that target to `pending`; do not invalidate unrelated verified targets.
 
 ## Local and public use
 
-The private/local target workspace may retain user-supplied and paper-extracted images for the user's analysis. The normal local decision report must display every verified target so the user can audit what will be reproduced.
+The local workspace/report may retain and display paper-extracted or user-supplied targets for the user's analysis without exposing absolute paths. Redistribution is separate:
 
-Redistribution is a separate question:
+- local report: show every admitted verified target; keep unresolved-item status in the separate acquisition summary beside it;
+- public report: include target bytes only with verified redistribution permission; otherwise show a rights notice without paths, filenames, signed URLs, or content.
 
-- `local` report: embed a sanitized local copy of each target, including a local-analysis-only target; do not expose absolute source paths.
-- `public` report: embed target bytes only when redistribution permission is verified. Otherwise omit the bytes and show a rights-boundary notice without leaking filenames, paths, signed URLs, or content.
+Never infer redistribution permission from possession, public accessibility, or a paper subscription.
 
-Never infer redistribution permission from local possession, public web accessibility, a paper subscription, or the right to analyze the work locally.
+## Deterministic helper
 
-## Commands
-
-Use the bundled deterministic tool:
-
-The tool requires Python 3.10+, Pillow, and pdfplumber. Paper-reference extraction also requires Poppler's `pdftoppm`. Probe existing environments first; if the open-source dependencies are absent, create a project-local isolated environment within the approved investigation budget rather than modifying a global environment.
+Resolve the skill directory and invoke its scripts with absolute task paths. The helper requires Python 3.10+, Pillow, and pdfplumber; automatic PDF extraction also requires Poppler `pdftoppm`. Prefer existing compatible environments, otherwise create a project-local open-source environment within budget.
 
 ```bash
-python scripts/materialize_target_figures.py --paper paper.pdf \
+# Paper + uploaded images with numeric references
+python <skill-root>/scripts/materialize_target_figures.py --paper paper.pdf \
   --image fig-1.png --image fig-2.png \
   --uploaded-figure-refs 1,2 --output targets
 
-python scripts/materialize_target_figures.py --paper paper.pdf \
+# Paper + numeric references/ranges
+python <skill-root>/scripts/materialize_target_figures.py --paper paper.pdf \
   --figures 1,3,5-8 --output targets
 
-python scripts/materialize_target_figures.py \
+# Images only
+python <skill-root>/scripts/materialize_target_figures.py \
   --image target-a.png --image target-b.png --output targets
 
-python scripts/materialize_target_figures.py \
+# Verify only after visual review
+python <skill-root>/scripts/materialize_target_figures.py \
   --verify-manifest targets/manifest.json --verify-targets fig-01,fig-02
+
+# Continue with a verified subset without copying target bytes
+python <skill-root>/scripts/materialize_target_figures.py \
+  --derive-subset-manifest targets/manifest.json \
+  --subset-output targets/manifest.verified.json \
+  --subset-target-set-id targets-verified
 ```
 
-After visually reviewing the complete set, `--verify-all` is the explicit batch form. Omitting both `--verify-targets` and `--verify-all` is an error; target acquisition never turns an unreviewed set into a verified set by default.
+Use `targets/manifest.verified.json` as the report and approval-gate manifest, including when all original-manifest targets were admitted. The original `manifest.json` remains the complete acquisition ledger.
 
-For a reviewed uploaded paper figure that already includes its complete original caption, add `--verified-caption-included`. Automatic PDF extractions record caption inclusion themselves.
+Use `--verify-all` only after reviewing the entire set. For an uploaded paper figure that already includes its original caption, use `--verified-caption-included` when the binding has been reviewed.
 
-If an automatic crop fails QA, replace it through the traceable Phase 0 command and then review it again:
+If an existing target crop fails QA, replace it traceably and review again:
 
 ```bash
-python scripts/materialize_target_figures.py \
+python <skill-root>/scripts/materialize_target_figures.py \
   --replace-manifest targets/manifest.json \
-  --replace-target fig-01 \
-  --replacement-image reviewed-fig-01.png
+  --replace-target fig-01 --replacement-image reviewed-fig-01.png
 ```
 
-The tool preserves the first acquisition, normalizes the replacement, refreshes its hashes, records the replacement, and returns the target to `needs-review`. Do not edit a verified normalized image silently.
+For a free-text reference that automatic extraction cannot create safely, acquire the reviewed crop as a paper-plus-image target, then bind its identity without editing the normalized PNG in place:
+
+```bash
+python <skill-root>/scripts/materialize_target_figures.py \
+  --bind-manifest targets/manifest.json --bind-target uploaded-01 \
+  --paper-figure-label "Fig. S1" --paper-page 12 \
+  --paper-caption "Complete reviewed caption from the paper."
+```
+
+Binding remains pending until visual verification. Keep the exact user label, page, complete caption, target hash, and QA record.

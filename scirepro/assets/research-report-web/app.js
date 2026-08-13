@@ -59,6 +59,40 @@
     structural: "结构特征",
     "visual-fidelity": "视觉还原"
   };
+  const formulaStatusLabels = {
+    verified: "已独立核验",
+    derived: "已补全推导",
+    ambiguous: "存在歧义",
+    "paper-code-divergence": "论文与代码不一致",
+    invalid: "发现错误",
+    "not-checkable": "当前无法判定"
+  };
+  const formulaDecisionLabels = {
+    "use-as-stated": "按原式采用",
+    "use-derived": "采用可追溯推导",
+    "split-routes": "论文式与代码实现分路线",
+    "freeze-assumption": "冻结透明假设",
+    block: "阻断该路线"
+  };
+  const formulaInterpretationLabels = {
+    "paper-formula": "论文公式解释",
+    "code-implementation": "代码实现解释",
+    "alternative-derived": "其他可推导解释",
+    "as-stated": "按原式解释",
+    derived: "推导解释",
+    assumed: "假设解释"
+  };
+  const formulaCheckLabels = {
+    derivation: "独立推导",
+    "self-consistency": "自洽性",
+    dimensions: "维度",
+    units: "量纲/单位",
+    "boundary-cases": "边界与极限",
+    "matrix-shape": "矩阵形状",
+    "code-cross-check": "代码交叉核验",
+    "source-cross-check": "原始文献交叉核验",
+    "figure-trend": "图中趋势交叉核验"
+  };
   const requirementCategoryLabels = {
     environment: "运行环境",
     input: "输入数据",
@@ -87,8 +121,12 @@
   const included = new Set();
   const consents = new Set();
   const parameterValues = new Map();
-  const sensitiveName = /(?:authorization|cookie|credential|password|private[_-]?key|secret|session|token)/i;
+  const sensitiveName = /^(?:authorization|cookie|credentials?|passw(?:or)?d|private[_-]?key|secret|session|token|(?:[a-z0-9]+[_-])?api[_-]?key|access[_-]?key(?:[_-]?id)?|client[_-]?secret|secret[_-]?key|auth[_-]?token|(?:[a-z0-9]+[_-])?access[_-]?token|(?:[a-z0-9]+[_-])?refresh[_-]?token|bearer[_-]?token|session[_-]?token)$/i;
   const sensitiveQueryName = /^(?:access[_-]?key|api[_-]?key|auth|authorization|credential|password|secret|signature|sig|token|x-amz-.*)$/i;
+  const privateKeyMarker = /-----BEGIN (?:OPENSSH |RSA |EC |DSA |ENCRYPTED )?PRIVATE KEY-----/i;
+  const authorizationValue = /\bauthorization\s*:\s*(?:bearer|basic)\s+[A-Za-z0-9+/._~=-]+/i;
+  const knownSecretValue = /(?:\bAKIA[0-9A-Z]{16}\b|\bAIza[0-9A-Za-z_-]{20,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b)/i;
+  const secretAssignment = /(?:^|[\s;,])(?:export\s+)?(?:aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key|access[_-]?key(?:[_-]?id)?|(?:[a-z0-9]+[_-])?api[_-]?key|auth[_-]?token|client[_-]?secret|credential|passw(?:or)?d|private[_-]?key|secret[_-]?key|(?:[a-z0-9]+[_-])?access[_-]?token|(?:[a-z0-9]+[_-])?refresh[_-]?token|bearer[_-]?token|session[_-]?token)\s*[:=]\s*(?:['"])?(?!\[REDACTED\])[^\s,'";]+/im;
   let currentFigureId = figures[0] && figures[0].figureId;
 
   function node(tag, className, text) {
@@ -232,6 +270,7 @@
   function safeParameterValue(spec, value) {
     if (sensitiveName.test(spec.parameterId || "")) return { valid: false };
     if (value === undefined || value === null || value === "") return { valid: !spec.required, value };
+    if (typeof value === "string" && (privateKeyMarker.test(value) || authorizationValue.test(value) || secretAssignment.test(value) || knownSecretValue.test(value))) return { valid: false };
     if (spec.type === "boolean") return { valid: typeof value === "boolean", value };
     if (spec.type === "integer") {
       const valid = Number.isInteger(value) && (spec.min === undefined || value >= spec.min) && (spec.max === undefined || value <= spec.max);
@@ -269,18 +308,32 @@
     return (figure.routes || []).find((route) => route.routeId === routeId);
   }
 
+  function requirementCanRun(requirement) {
+    if (!requirement) return false;
+    if (["verified", "not-required"].includes(requirement.state)) return true;
+    const expected = requirement.state === "derivable" ? "frozen" : requirement.state === "assumable" ? "accepted" : null;
+    return expected && requirement.resolution && requirement.resolution.status === expected &&
+      typeof requirement.resolution.basis === "string" && requirement.resolution.basis.trim().length > 0;
+  }
+
+  function routeHasBoundedEstimate(route) {
+    const estimate = route && route.estimated;
+    return estimate && ["downloadBytes", "diskBytes", "runtimeMinutes", "costUsd"]
+      .every((field) => Number.isFinite(estimate[field]) && estimate[field] >= 0);
+  }
+
   function routeIsBlocked(figure, route) {
     if (!route || route.status === "blocked" || (route.blockers || []).length) return true;
+    if (!routeHasBoundedEstimate(route)) return true;
     const blockingRequirements = new Set(
       (figure.requirements || []).filter((requirement) => requirement.blocking).map((requirement) => requirement.requirementId)
     );
     if ((route.requirementIds || []).some((requirementId) => blockingRequirements.has(requirementId))) return true;
     const requirementsById = new Map((figure.requirements || []).map((requirement) => [requirement.requirementId, requirement]));
-    const requirementStates = (route.requirementIds || [])
+    const routeRequirements = (route.requirementIds || [])
       .map((requirementId) => requirementsById.get(requirementId))
-      .filter(Boolean)
-      .map((requirement) => requirement.state);
-    if (route.status === "ready" && requirementStates.some((state) => !["verified", "not-required"].includes(state))) return true;
+      .filter(Boolean);
+    if (routeRequirements.some((requirement) => !requirementCanRun(requirement))) return true;
     const routeEnvironments = (route.environmentIds || [])
       .map((environmentId) => environmentsById.get(environmentId))
       .filter(Boolean);
@@ -296,7 +349,7 @@
 
   function defaultRoute(figure) {
     const recommended = routeFor(figure, figure.reproduction && figure.reproduction.recommendedRouteId);
-    if (recommended) return recommended;
+    if (recommended && !routeIsBlocked(figure, recommended)) return recommended;
     return (figure.routes || []).find((route) => !routeIsBlocked(figure, route)) || (figure.routes || [])[0] || null;
   }
 
@@ -517,7 +570,12 @@
       ["物化方式", materialization.method || (target.acquisitionMode === "paper-with-figure-references" ? "PDF 高分辨率渲染与裁切" : "目标图像规范化")],
       ["图像规格", `${dpiText} · ${captionText}`],
       ["质量核验", qaStatusLabels[qaStatus] || qaStatus || "未声明"],
-      ["报告分发", bundleStateLabels[figure.image && figure.image.bundleState] || (figure.image && figure.image.bundleState) || "未声明"]
+      ["报告分发", bundleStateLabels[figure.image && figure.image.bundleState] || (figure.image && figure.image.bundleState) || "未声明"],
+      ["展示图像", figure.image && figure.image.bundleState === "omitted-rights"
+        ? "未嵌入（版权限制）"
+        : figure.image && figure.image.displayProxy
+          ? "轻量视觉代理（目标哈希仍绑定原图）"
+          : "完整目标图"]
     ].forEach(([label, value]) => {
       const fact = node("div", "target-fact");
       append(fact, node("dt", null, label), node("dd", null, value));
@@ -614,6 +672,51 @@
       renderEvidenceRefs(generation.plotMapping.evidenceRefs)
     );
     generationSection.appendChild(plotCard);
+    if (generation.formulaAudit) {
+      const audit = generation.formulaAudit;
+      const formulaAudit = node("div", "formula-audit");
+      append(formulaAudit,
+        node("span", "field-label", "相关公式、参数与假设核验"),
+        node("p", "formula-audit-rationale", audit.rationale),
+        labeledBlock("本次只核验", (audit.included || []).join("；"), "compact-field")
+      );
+      if (audit.excluded && audit.excluded.length) {
+        formulaAudit.appendChild(labeledBlock("明确不扩展到", audit.excluded.join("；"), "compact-field"));
+      }
+      const auditGrid = node("div", "formula-audit-grid");
+      (audit.items || []).forEach((item) => {
+        const card = node("article", "formula-check-card");
+        const meta = node("div", "formula-check-meta");
+        const boundRouteLabels = (item.routeBindings || []).map((binding) => {
+          const route = routeFor(figure, binding.routeId);
+          const interpretation = formulaInterpretationLabels[binding.interpretation] || binding.interpretation;
+          return route
+            ? `${interpretation}：${route.label} · ${routeLabels[route.status] || route.status}`
+            : `${interpretation}：${binding.routeId}`;
+        });
+        append(meta,
+          node("span", "formula-status", formulaStatusLabels[item.status] || item.status),
+          node("span", "formula-decision", formulaDecisionLabels[item.implementationDecision] || item.implementationDecision)
+        );
+        append(card,
+          meta,
+          node("h4", null, item.label),
+          labeledBlock("为什么与目标图有关", item.dependency, "compact-field"),
+          labeledBlock("论文/代码中的表达", item.sourceStatement, "compact-field"),
+          renderPills((item.checks || []).map((check) => formulaCheckLabels[check] || check), "scope-pills", "未声明核验方式"),
+          labeledBlock("核验结论", item.finding, "compact-field"),
+          labeledBlock(
+            "绑定路线",
+            boundRouteLabels.length ? boundRouteLabels.join("；") : "全部候选路线均因该项受阻",
+            "compact-field formula-route-binding"
+          ),
+          renderEvidenceRefs(item.evidenceRefs)
+        );
+        auditGrid.appendChild(card);
+      });
+      formulaAudit.appendChild(auditGrid);
+      generationSection.appendChild(formulaAudit);
+    }
     const unknowns = node("div", "unknowns");
     unknowns.appendChild(node("span", "field-label", "尚不确定"));
     unknowns.appendChild(textList(generation.unknowns, "plain-list", "当前没有未披露的生成链缺口"));
@@ -742,7 +845,10 @@
         node("strong", null, requirement.label),
         node("small", null, requirementCategoryLabels[requirement.category] || requirement.category)
       );
-      append(row, state, labelCopy, node("span", "requirement-detail", requirement.detail));
+      const detail = requirement.resolution
+        ? `${requirement.detail} · ${requirement.resolution.status === "accepted" ? "已接受" : "已冻结"}：${requirement.resolution.basis}`
+        : requirement.detail;
+      append(row, state, labelCopy, node("span", "requirement-detail", detail));
       if (requirement.blocking) row.appendChild(node("span", "blocking-chip", "阻断"));
       requirements.appendChild(row);
     });
@@ -1027,9 +1133,14 @@
       const access = source.access && source.access.state ? source.access.state : "unknown";
       const license = source.license && (source.license.spdxId || source.license.name || source.license.state);
       append(item, node("strong", null, source.title), node("small", null, `${source.publisher || "来源未知"} · ${access} · ${license || "许可未知"}`));
+      if (source.access && (source.access.checkedAt || source.access.note)) {
+        item.appendChild(node("small", null, [source.access.checkedAt, source.access.note].filter(Boolean).join(" · ")));
+      }
+      if (source.note) item.appendChild(node("small", null, source.note));
       if (source.artifact && source.artifact.sha256) {
         const artifactHash = node("p", "appendix-artifact-hash");
-        append(artifactHash, node("span", null, "本地来源工件 SHA-256"), node("code", null, source.artifact.sha256));
+        const artifactLabel = `${source.artifact.fileName || "本地来源工件"} · ${formatBytes(source.artifact.sizeBytes)}`;
+        append(artifactHash, node("span", null, `${artifactLabel} · SHA-256`), node("code", null, source.artifact.sha256));
         item.appendChild(artifactHash);
       }
       sourceList.appendChild(item);
