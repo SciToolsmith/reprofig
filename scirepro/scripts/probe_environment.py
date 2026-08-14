@@ -741,7 +741,7 @@ def frozen_environment_components(
     matlab_entries: list[dict],
     other_entries: list[dict],
 ) -> tuple[list[dict], list[dict]]:
-    """Project verified probes into the environment record consumed by the run bundler."""
+    """Project verified probes into a compact reusable environment record."""
     engines: list[dict] = []
     packages: list[dict] = []
     seen_engines: set[tuple[str, str]] = set()

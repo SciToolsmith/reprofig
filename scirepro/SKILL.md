@@ -1,46 +1,44 @@
 ---
 name: scirepro
-description: Reproduce and scientifically assess one or many research figures from a paper plus target images, a paper plus figure references, or target images alone. Use when Codex must acquire and interpret targets, reconstruct the relevant data-to-figure chain, choose and run the strongest honest route, validate scientific observables, preserve negative results, and deliver rerunnable evidence. Route semantic scientific schematics to sci-diagram-pptx instead of reproducing them as quantitative figures.
+description: Reproduce and scientifically assess one or many research figures from a paper plus target images, a paper plus figure references, or target images alone. Use when Codex must recover the target-relevant data-to-figure chain, choose and run the strongest honest route, validate scientific observables, preserve useful negative results, and deliver concise rerunnable evidence. Route semantic scientific schematics terminally to sci-diagram-pptx.
 ---
 
 # SciRepro
 
-Recover the smallest defensible process that can regenerate or test what a scientific figure shows. Optimize for a useful, rerunnable result or a precise blocker—not for pixel resemblance or exhaustive paper review.
+Recover the smallest defensible process that can regenerate or test what a scientific figure shows. Optimize for the first useful rerunnable result or a precise blocker, not pixel resemblance or exhaustive investigation.
 
-## Route ownership first
+## Global cost governor
 
-Classify each requested target before SciRepro analysis:
+Use one adaptive workflow; do not invent quick, standard, or audit tiers. Before expanding investigation with another search branch, subagent, broad probe, or additional scientific run, name internally the unknown it will resolve. Expand only when the answer can change the route, supported claim, safety/authority, material cost, or required deliverable. Normal reads and commands inside the chosen step need no per-call justification, ledger, artifact, or user-facing narration.
 
-- Hand a semantic schematic to `sci-diagram-pptx` when meaning is carried mainly by nodes, connectors, labels, formulas, grouping, containment, or topology. Read [diagram-handoff.md](references/diagram-handoff.md), transfer only the target and necessary scientific context, and end SciRepro ownership.
-- Keep a target when meaning is carried mainly by quantitative axes, scales, samples, legends, measurements, images, or data-driven geometry.
-- Route clearly separable panels independently; otherwise treat the whole figure as one target.
+Prioritize the first scientifically meaningful V0 as soon as the route is defensible. Stop source archaeology when more evidence cannot change a decision. Delegate only an exceptional, independently bounded question, pass the minimum target-specific context, and avoid duplicate scouts. Run sensitivity analysis only when the claim or interpretation of a negative result depends on robustness. Use no universal iteration count.
 
-Use an installed companion when valid. If it is missing, the pinned public companion may be bootstrapped automatically under the narrow exception in [permission-gates.md](references/permission-gates.md). Fail closed on conflicts or validation failure, and never install its runtimes or system dependencies implicitly.
+## Route ownership
 
-## Core workflow
+- Hand a semantic schematic to `sci-diagram-pptx` when meaning is carried mainly by labelled objects, connectors, formulas, grouping, containment, or topology. Follow [diagram-handoff.md](references/diagram-handoff.md), transfer minimal context, and end SciRepro ownership for that target.
+- Keep quantitative plots, measured images, and other targets whose meaning depends mainly on axes, scales, samples, legends, or data-driven geometry.
+- Route clearly separable panels independently; otherwise keep the figure intact. Multi-target tasks may use different routes and engines, but each target keeps an independent outcome.
 
-1. **Stabilize the target when needed.** Acquire a readable figure, caption, paper binding, nearby context, and stable identity. Use [target-figure-acquisition.md](references/target-figure-acquisition.md) for fragile extraction, normalization, hashing, replacement, QA, or multi-target tracking. Never execute an unresolved target.
-2. **Understand the observable.** Separate visible observation from author interpretation. Reconstruct only the target-dependent chain: input, selection/preprocessing, method, parameters and randomness, aggregation/statistics, plotted quantity, and visual encoding.
-3. **Choose the strongest honest route.** Use `direct-recompute`, `mechanism-reproduction`, `alternative-validation`, or `original-case-blocked`. Without reliable paper context, use `image-derived-reconstruction` and read [image-derived-reconstruction.md](references/image-derived-reconstruction.md). State what the route tests and what it cannot support.
-4. **Resolve decision-changing unknowns.** Check only sources, data identity, formulas, parameters, runtime capabilities, and permissions that can change feasibility, claim scope, material cost, or safety. Read [source-environment-audit.md](references/source-environment-audit.md) when external artifacts or uncertain execution capability matter.
-5. **Bound the run internally.** Before execution, settle target and route identity, inputs, implementation/runtime, parameters or seeds, assumptions, acceptance criteria, effects, resource declarations, and expected deliverables. Keep this assessment proportional to the task; it is reasoning context, not a user-facing artifact.
-6. **Execute or stop.** Run bounded, create-only local work directly when scientifically defensible and permitted. Consolidate currently known material questions into one decision request when practical. If a later discovery creates a new material scientific or permission decision, ask then; do not stretch earlier authority. If every defensible route is blocked, stop with the evidence checked and the condition that would reopen it.
-7. **Run and validate.** Preserve the first scientifically meaningful output as V0. Compare scientific content before presentation. Follow [execution-validation.md](references/execution-validation.md); iterate only on a stated diagnosis or testable hypothesis with expected information gain, and stop when criteria pass or another run cannot materially improve the scientific conclusion.
-8. **Deliver one result folder.** Finalize exactly one create-only run folder containing shared provenance and isolated per-target results. Follow [run-bundle-contract.md](references/run-bundle-contract.md). A block before execution may remain chat-only when no durable artifact helps continuation.
+Use a valid installed companion. If it is absent, only the pinned public companion exception in [permission-gates.md](references/permission-gates.md) may bootstrap it. Fail closed on conflict or validation failure; never install companion runtimes or system dependencies implicitly.
 
-For read-only interpretation or feasibility questions, answer directly. Do not manufacture execution artifacts.
+## Adaptive workflow
+
+1. **Classify and stabilize targets.** Accept paper plus uploaded targets, paper plus figure/panel references, or target images alone. Read [target-figure-acquisition.md](references/target-figure-acquisition.md) only when identity, extraction, replacement, or multi-target tracking needs it. Never execute an unresolved target.
+2. **Understand the observable.** Separate visible observation from author interpretation. Reconstruct only the target-dependent chain: input, selection/preprocessing, method, parameters/randomness, aggregation/statistics, plotted quantity, and visual encoding.
+3. **Choose the strongest honest route.** Use `direct-recompute`, `mechanism-reproduction`, `alternative-validation`, `image-derived-reconstruction`, or `original-case-blocked`. For pixels without reliable paper context, follow [image-derived-reconstruction.md](references/image-derived-reconstruction.md). State what the route tests and cannot support.
+4. **Resolve decision-changing unknowns.** Check only sources, data identity, target-relevant formulas/parameters, runtime capability, and permissions that can change the decision. Follow [source-environment-audit.md](references/source-environment-audit.md) when external artifacts or uncertain execution capability matter.
+5. **Execute in a transient workspace.** Use system temporary storage or one hidden `.scirepro-work/<task-id>/` root, never a second visible peer delivery. Keep acquisition files, searches, probes, code drafts, intermediate runs, raw logs, QA images, and internal manifests outside the customer folder. Follow [permission-gates.md](references/permission-gates.md); do not create a pre-execution webpage, approval artifact, or ceremonial gate. Ask genuine new authority or scientific choices concisely in chat.
+6. **Preserve V0 and validate.** Follow [execution-validation.md](references/execution-validation.md). Compare scientific content before presentation, preserve informative failures, and make another run only for a named discrepancy or hypothesis that passes the cost governor.
+7. **Assemble one customer folder.** Follow [delivery-contract.md](references/delivery-contract.md). Deliver a plain-language outcome, primary outputs, rerun essentials, assumptions, rights, and material limitations. Raw internal logs, QA, manifests, and search traces are not customer deliverables. A pre-execution blocker may remain chat-only when no durable artifact helps continuation.
+
+For read-only interpretation or feasibility questions, answer directly and create no execution artifacts.
 
 ## Scientific judgment
 
-- Treat the author’s native code, data format, and runtime as the default evidence-preserving route when they serve the user’s objective. A requested independent implementation, derivation, portable deliverable, or cross-check may justify another route. Never substitute silently; document compatibility checks and the changed evidence boundary.
-- Treat paper equations, parameters, and code as candidate specifications. Derive or verify only target-relevant units, dimensions, indices, signs, normalization, assumptions, boundary conditions, and values. Record ambiguities and paper–code differences; never silently repair them.
-- Define acceptance criteria before tuning where practical. Scientific fidelity—variables, units, scale, phenomenon, magnitude, uncertainty, and robustness—outranks styling. Pixel similarity alone validates only a declared image-derived objective.
-- Preserve V0, contrary results, failed attempts that explain the outcome, compatibility patches, and remaining discrepancies. Never cherry-pick randomness, conceal negative evidence, or weaken criteria after seeing the output.
-- Keep operational status, validation status, and claim status independent. A crash does not refute a paper; `unsupported` requires a valid test of the claim.
-- Reproduction failure alone is not evidence of misconduct. Escalate only a repeatable anomaly that remains unexplained after relevant ordinary differences are tested. Use neutral language and never contact authors, journals, or third parties without separate authorization.
+- Prefer author-native code, data formats, and runtimes when they best preserve evidence for the objective. Use an independent implementation, derivation, port, or cross-check when the objective requires it; declare every substitution and changed evidence boundary.
+- Treat equations, parameters, and code as candidate specifications. Verify only target-relevant units, dimensions, indices, signs, normalization, assumptions, boundary conditions, and values. Preserve material paper-code differences; never silently repair them.
+- Define acceptance criteria before tuning where practical. Scientific fidelity outranks styling; pixel similarity validates only a declared image-derived objective.
+- Preserve the first meaningful V0, contrary results, informative failed attempts, compatibility patches, and remaining discrepancies. Never cherry-pick randomness, conceal negative evidence, or weaken criteria after seeing output.
+- Keep operational, validation, and claim status independent. A crash does not refute a paper, and reproduction failure alone is not evidence of misconduct.
 
-## Interaction and safety
-
-Read [permission-gates.md](references/permission-gates.md) before downloads, installation, code execution, proprietary-runtime use, or external effects. Do not create a pre-execution webpage or approval ceremony; assessment remains internal, and genuine decisions are asked concisely in chat.
-
-Resource caps in a plan are declarations unless the execution mechanism actually enforces or measures them. Never describe a declared limit as sandboxed, enforced, or observed without corresponding evidence.
+Resource caps are declarations unless a runner actually enforces or measures them. Never report a planned limit as enforced or observed without evidence.

@@ -1,24 +1,24 @@
 # Terminal schematic handoff
 
-Use this reference only after a target is provisionally identified as a scientific semantic schematic. This is a terminal router, not a SciRepro reproduction route.
+Use this reference after a target is identified as a scientific semantic schematic. This is a terminal transfer to `sci-diagram-pptx`, not a SciRepro reproduction route.
 
-## Classification
+## Classify the target
 
-Hand off algorithm flowcharts, scientific workflows, technical routes, mechanism diagrams, system or model architectures, block diagrams, and conceptual schematics when visible meaning is encoded mainly by labelled objects, connectors, direction, grouping, nesting, containment, or topology.
+Hand off algorithm flowcharts, scientific workflows, technical routes, mechanism diagrams, system/model architectures, block diagrams, and conceptual schematics when meaning is encoded mainly by labelled objects, connectors, direction, grouping, nesting, containment, or topology.
 
-Keep quantitative plots in SciRepro when meaning is encoded mainly by axes, scales, legends, samples, or data-driven geometry, even if the plot contains callout arrows or explanatory boxes.
+Keep quantitative plots in SciRepro when meaning is encoded mainly by axes, scales, legends, samples, measurements, or data-driven geometry, even when callouts or explanatory boxes are present.
 
-- A process canvas containing a small photograph, spectrum, screenshot, or formula is one schematic. Hand off the whole target; the receiving skill decides whether that content remains a raster inset.
-- Clearly separable peer panels may be routed independently while retaining their parent figure and panel labels. Exclude handed-off panels from SciRepro execution and its final result folder.
-- When the panel boundary or requested deliverable is genuinely unclear, ask one concise scope question. Do not begin SciRepro acquisition or execution while waiting.
+- Treat a process canvas containing a small photograph, spectrum, screenshot, or formula as one schematic; the receiver decides whether that content remains a raster inset.
+- Route clearly separable peer panels independently while preserving parent figure and panel identity. Exclude transferred panels from SciRepro scientific execution and validation.
+- Ask one concise scope question only when the panel boundary or required artifact is genuinely decision-changing. Do not begin SciRepro execution while waiting.
 
-## Acquire only what routing needs
+## Acquire only what transfer needs
 
-When only a paper and figure reference are available, obtain the minimum readable target needed for handoff. Preserve the original paper or upload, figure label, page, full caption, and a traceable crop or panel bounding box. Read nearby text or equations only when they disambiguate wording, formulas, arrow direction, grouping, or the selected panel.
+When only a paper and figure reference are available, obtain the minimum readable target required by the receiver. Preserve the original upload or paper locator, figure/panel label, page, complete caption, and traceable crop/bounds. Read nearby text or equations only when they disambiguate visible wording, a target-relevant formula, arrow direction, grouping, or the selected panel.
 
-Do not create a SciRepro target workspace or result folder for this limited acquisition.
+Do not create a SciRepro target workspace, execution route, or validation record for the schematic. When every requested target is transferred, the companion owns its delivery and SciRepro creates no separate customer folder. In a mixed task, the task coordinator may later place only the companion's final artifacts in the common customer folder; SciRepro must not reinterpret or revalidate them. Do not continue source archaeology after the receiver has enough context.
 
-## Ensure the companion without asking
+## Ensure the pinned companion
 
 Run:
 
@@ -26,27 +26,36 @@ Run:
 python <skill-root>/scripts/ensure_diagram_companion.py
 ```
 
-This is a standing, narrowly bounded bootstrap exception. It may install only the user-level Codex skill from:
+This standing exception may install only the user-level Codex skill from:
 
 - repository: `SciToolsmith/sci-diagram-pptx`;
 - path: `skills/sci-diagram-pptx`;
 - commit: `26a2ae281df4209fa9687ca80d27a3aa7feb1ee3`;
 - method: anonymous public download through the system `skill-installer`.
 
-Do not ask for confirmation when the destination is absent. Do not follow `main`, search for a substitute, use Git credentials, overwrite an existing destination, or install Python, Node, Office, LibreOffice, fonts, system packages, or any runtime dependency. A valid existing installation is reused without modification and reported as user-managed; do not falsely assign the pinned commit to it. An invalid or conflicting destination, missing system installer, download failure, or failed post-install validation is terminal: report the concrete blocker and stop rather than continuing in SciRepro.
+Do not ask merely because the valid destination is absent. Do not follow `main`, search for substitutes, use credentials, overwrite an existing destination, or install Python, Node, Office, LibreOffice, fonts, system packages, or companion runtime dependencies. Reuse a valid existing installation without modification and report it as user-managed. On conflict, missing installer, download failure, or failed validation, report the concrete blocker and stop rather than returning to SciRepro.
 
-The helper returns the absolute companion directory. After a successful install or validation, read that directory's `SKILL.md` completely and read only the references it routes to. Continue under `sci-diagram-pptx` in the same task; do not wait for skill discovery on a later turn.
+After installation or validation, read the companion's `SKILL.md` completely and only the references it directly routes to. Continue under `sci-diagram-pptx` in the same task.
 
-## Transfer of ownership
+## Transfer minimal ownership
 
-Pass only the material the receiving skill needs:
+Pass only:
 
-- the unchanged uploaded target, or the traceable full-figure crop;
-- a selected panel bounding box when applicable;
-- paper path or DOI, figure and panel label, page, and complete caption when known;
-- the minimum nearby context needed to preserve visible wording, formulas, connector semantics, and scientific meaning;
-- the user's original requested deliverable and constraints.
+- the unchanged uploaded target or traceable full-figure crop;
+- selected panel bounds when applicable;
+- paper path or DOI, figure/panel label, page, and complete caption when known;
+- minimum nearby context needed for visible wording, formulas, connector semantics, and scientific meaning;
+- the user's requested deliverable and constraints.
 
-Pass no SciRepro route, environment, validation, or result-folder machinery. Once the transfer succeeds, SciRepro instructions cease to govern that target.
+Pass no SciRepro route, environment probes, source-search history, validation machinery, internal manifests, or delivery structure. Once transfer succeeds, SciRepro instructions cease to govern that target.
 
-The receiver may return a target once only when it determines that meaning is actually encoded by quantitative axes, scales, or data-driven geometry. The return must state that reason. Resolution, unreadable text, runtime availability, or PPTX authoring limitations are not reasons to return ownership.
+The receiver may return a target once only when it determines that meaning is actually encoded by quantitative axes, scales, or data-driven geometry. Resolution, unreadable text, runtime availability, or PPTX authoring difficulty are not reasons to return ownership.
+
+## Default terminal deliverable
+
+When the user does not specify a format, request these customer-facing artifacts from the companion:
+
+- one native editable PowerPoint (`.pptx`) containing the reconstructed schematic; and
+- one PNG preview of the same final result for immediate inspection.
+
+Do not add SVG, PDF, or multiple stylistic variants to the customer folder by default. The companion may create build source and QA artifacts internally under its own Skill contract; promote executable build source only when the user explicitly requests it and it is cleanly reproducible outside transient middleware: dependencies and commands are documented, local paths and internal tool metadata are removed, and the generated PPTX and preview have been verified. A user-requested downstream format or presentation context overrides the default.
