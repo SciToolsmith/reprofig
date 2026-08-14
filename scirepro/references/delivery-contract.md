@@ -26,15 +26,19 @@ atomic no-replace rename. It never updates or repairs an existing delivery.
 
 ## Plan
 
-The UTF-8 JSON plan uses `scirepro.delivery-plan/v1` and remains internal:
+The UTF-8 JSON plan uses `scirepro.delivery-plan/v2` and remains internal:
+
+Plans using `scirepro.delivery-plan/v1` lack route and scientific-basis fields and are
+intentionally rejected; regenerate the internal plan rather than inferring those facts during
+assembly. Existing customer folders need no migration.
 
 ```json
 {
-  "schemaVersion": "scirepro.delivery-plan/v1",
+  "schemaVersion": "scirepro.delivery-plan/v2",
   "title": "Study figure reproduction",
   "slug": "study-figures",
   "distribution": "local-private",
-  "conclusion": "The trend is supported, but the exact trace is not reproduced.",
+  "conclusion": "The declared trend and ordering are supported; exact pointwise replay was outside scope.",
   "shared": [],
   "licenses": [],
   "targets": [
@@ -43,9 +47,16 @@ The UTF-8 JSON plan uses `scirepro.delivery-plan/v1` and remains internal:
       "title": "Primary response curve",
       "kind": "quantitative",
       "operationalStatus": "complete",
-      "validationStatus": "partially-passed",
-      "claimStatus": "partially-supported",
-      "conclusion": "The direction and ordering agree; pointwise values differ.",
+      "validationStatus": "passed",
+      "claimStatus": "supported",
+      "route": "mechanism-reproduction",
+      "validationBasis": [
+        "Peak ordering and response direction agree with the declared target observables."
+      ],
+      "materialAssumptions": [
+        "The unpublished random realization was replaced by a fixed generated seed."
+      ],
+      "conclusion": "The declared direction and ordering agree; pointwise identity was not an acceptance criterion.",
       "mainResult": {
         "source": "work/result.png",
         "name": "result.png",
@@ -97,11 +108,24 @@ The UTF-8 JSON plan uses `scirepro.delivery-plan/v1` and remains internal:
 }
 ```
 
-`reference`, `dependencyNote`, and `rerunArgv` are optional. The four artifact-list fields may
-be empty. If `implementation` is nonempty, provide exactly one `rerunArgv` and either a
-dependency artifact or one concise `dependencyNote`, such as `Python standard library only.`
-If implementation is empty, omit the command. Re-run arguments are interpreted from the
-delivery root and must use portable relative paths.
+`reference`, `dependencyNote`, `rerunArgv`, and `blocker` are optional. The four artifact-list
+fields may be empty. `route`, `validationBasis`, and `materialAssumptions` are required plan
+fields but add no customer artifact. Keep each list item to one short statement:
+
+- `route` identifies what was actually done: `direct-recompute`, `mechanism-reproduction`,
+  `alternative-validation`, `image-derived-reconstruction`, `original-case-blocked`, or
+  `semantic-diagram-handoff`;
+- `validationBasis` names the tested observable and check that supports the validation status,
+  such as trend, peak location, numeric tolerance, visible geometry, or editability; and
+- `materialAssumptions` records only assumptions capable of changing interpretation. Use an
+  empty list when none were material; never invent an assumption to fill the field.
+
+Every validation result other than `not-run` needs at least one `validationBasis` item. A
+`not-run` target may keep that list empty but must provide a concise `blocker`. Do not require a
+separate evidence file merely to restate these fields. If `implementation` is nonempty, provide
+exactly one `rerunArgv` and either a dependency artifact or one concise `dependencyNote`, such
+as `Python standard library only.` If implementation is empty, omit the command. Re-run
+arguments are interpreted from the delivery root and must use portable relative paths.
 
 `mainResult` is normally required. It may be `null` only for a `blocked` or `cancelled` target,
 or a failed attempt that produced no useful artifact. The README reports `No result`; the
@@ -128,6 +152,13 @@ complete execution; `partially-passed` requires complete or partial execution; `
 `inconclusive` require a real attempt; and `not-run` is reserved for blocked, cancelled, or
 failed-before-validation work. The generated README inserts the appropriate evidence-boundary
 statement automatically.
+
+Keep route ownership consistent with the target. Quantitative and other scientific targets use
+the three scientific execution routes or `original-case-blocked`; image-derived targets use
+`image-derived-reconstruction` or `original-case-blocked`; semantic diagrams use
+`semantic-diagram-handoff`. `original-case-blocked` requires blocked execution and `not-run`
+validation. These checks prevent a status-only success from hiding what was actually tested,
+without forcing a larger report or evidence bundle.
 
 ## Artifact entries
 
@@ -181,7 +212,8 @@ directories and remain fully represented in the README.
 ```
 
 The generated README leads with the overall conclusion, links every main result, keeps the
-three statuses distinct, states target limitations and rights, and contains one shell-quoted
+three statuses distinct, and concisely states each target's route, validation basis, material
+assumptions, blocker when applicable, limitations, and rights. It contains one shell-quoted
 copyable command for each executable target.
 
 The assembler never inventories the delivery and never emits a manifest. Adding `.DS_Store`
@@ -192,7 +224,7 @@ or another customer-side file later therefore cannot invalidate an immutable fil
 Whitelist only files that help the customer understand, inspect, edit, or rerun the result:
 
 - the main result and, when permitted, its reference;
-- the implementation, true parameters, actionable dependencies, and smallest evidence that
+- the implementation, actual parameters or configuration used, actionable dependencies, and smallest evidence that
   supports the final conclusion;
 - shared inputs or source actually used; and
 - applicable license notices.

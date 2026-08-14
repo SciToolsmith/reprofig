@@ -31,6 +31,8 @@ Different targets may use different implementations or runtimes. Their successes
 
 The first two inputs support **research-process reproduction or assessment**. SciRepro combines the paper, target figure, and available code, data, and parameters to trace the target-relevant data–method–parameter–plot chain. This research-process reproduction may be a recomputation under original conditions, a mechanism reproduction, an alternative validation, or a blocker when key evidence is absent; one successful run is never presented as proof of every paper claim.
 
+When a paper omits details, SciRepro does not treat every missing value as a blocker. It asks whether the unknown can change the target scientific observables or conclusion: claim-defining unknowns are resolved, derived, or tested over the smallest useful range; non-critical controls receive a justified, explicit, rerunnable assumption, with a small comparison only when plausible choices could change acceptance; incidental random realizations and non-scientific styling are fixed once. When authoritative evidence shows that the original case cannot be recomputed exactly but its mechanism can still be tested, the Skill switches early to mechanism reproduction instead of extending archaeology or pursuing 1:1 pixels. Assumptions are never presented as author-recovered values or selected after the fact merely to match the image.
+
 The third input supports **image-derived reconstruction**, which is not conflated with research-process reproduction. SciRepro first assesses identifiability:
 
 - when axes, ticks, legends, and marks are clear enough, it can digitize and redraw visible data within a stated pixel-derived uncertainty;
@@ -50,7 +52,7 @@ Confirm target → understand the scientific observable → trace the relevant g
 ```
 
 - Author-native code, data formats, and runtimes are preferred when they best preserve evidence for the objective. An independent derivation, port, or cross-check may be the right route; every substitution is explicit.
-- Only sources, formulas, parameters, data, and environment facts capable of changing the route, conclusion, safety, material cost, or deliverable are investigated. Investigation stops when more evidence cannot change a decision.
+- Only sources, formulas, parameters, data, and environment facts capable of changing the route, conclusion, safety, material cost, or deliverable are investigated. Missing details are handled by scientific consequence, and investigation stops when more evidence cannot change a decision.
 - Safe, create-only, bounded local work proceeds without a pre-execution webpage or approval ceremony. Login, payment, restricted resources, upload, overwrite, publication, or a material scientific choice still requires the user.
 - The first scientifically useful V0 is produced and preserved early. Investigation expands to another search branch, delegation, broad probe, or scientific run only when it can resolve a named unknown that changes a decision.
 - Sensitivity analysis is used only when the claim or interpretation of a negative result depends on robustness. There is no fixed universal iteration count.

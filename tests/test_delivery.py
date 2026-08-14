@@ -80,6 +80,15 @@ class Fixture:
             claim = "not-applicable"
         else:
             claim = "supported"
+        if kind == "image-derived":
+            route = "image-derived-reconstruction"
+            validation_basis = ["Visible geometry and labels were checked against the supplied reference."]
+        elif kind == "semantic-diagram":
+            route = "semantic-diagram-handoff"
+            validation_basis = ["Editable structure and rendered appearance were checked."]
+        else:
+            route = "direct-recompute"
+            validation_basis = ["The declared observable was checked against the target criterion."]
         target = {
             "id": target_id,
             "title": f"Target {target_id}",
@@ -87,6 +96,9 @@ class Fixture:
             "operationalStatus": "complete",
             "validationStatus": "passed",
             "claimStatus": claim,
+            "route": route,
+            "validationBasis": validation_basis,
+            "materialAssumptions": [],
             "conclusion": f"The declared observable for {target_id} was assessed.",
             "mainResult": self.artifact(
                 f"{target_id}/result.bin",
@@ -148,6 +160,10 @@ class Fixture:
             "operationalStatus": "blocked",
             "validationStatus": "not-run",
             "claimStatus": "not-tested",
+            "route": "original-case-blocked",
+            "validationBasis": [],
+            "materialAssumptions": [],
+            "blocker": "The required original input was not published.",
             "conclusion": "No useful result could be produced because the required input is unavailable.",
             "mainResult": None,
             "implementation": [],
@@ -168,7 +184,7 @@ class Fixture:
         licenses: list[dict] | None = None,
     ) -> Path:
         value = {
-            "schemaVersion": "scirepro.delivery-plan/v1",
+            "schemaVersion": "scirepro.delivery-plan/v2",
             "title": "Example scientific reproduction",
             "slug": slug,
             "distribution": distribution,
@@ -208,6 +224,9 @@ class DeliveryAssemblerTests(unittest.TestCase):
             self.assertIn("`complete`", readme)
             self.assertIn("`passed`", readme)
             self.assertIn("`supported`", readme)
+            self.assertIn("`direct-recompute`", readme)
+            self.assertIn("The declared observable was checked against the target criterion.", readme)
+            self.assertIn("Material assumptions:** None declared.", readme)
             self.assertIn("figures/fig-01/result.png", readme)
             self.assertIn("python3 figures/fig-01/reproduce.py", readme)
             self.assertTrue((delivery / "figures/fig-01/scientific-evidence.json").is_file())
@@ -230,9 +249,30 @@ class DeliveryAssemblerTests(unittest.TestCase):
             delivery = Path(json.loads(run_assembler(plan, root / "out").stdout)["path"])
             readme = (delivery / "README.md").read_text(encoding="utf-8")
             self.assertIn("`image-derived`", readme)
+            self.assertIn("`image-derived-reconstruction`", readme)
             self.assertIn("`not-applicable`", readme)
             self.assertIn("does not recover or validate the original data", readme)
             self.assertNotIn("### Re-run", readme)
+
+    def test_blocked_image_derived_target_does_not_claim_a_reconstruction(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            target = fixture.target("panel-a", kind="image-derived", executable=False)
+            target.update({
+                "operationalStatus": "blocked",
+                "validationStatus": "not-run",
+                "validationBasis": [],
+                "blocker": "The image does not identify the hidden mapping required by the request.",
+                "conclusion": "No defensible reconstruction could be produced from the supplied pixels alone.",
+                "mainResult": None,
+            })
+            plan = fixture.plan([target])
+            delivery = Path(json.loads(run_assembler(plan, root / "out").stdout)["path"])
+            readme = (delivery / "README.md").read_text(encoding="utf-8")
+            self.assertIn("No result", readme)
+            self.assertIn("No image-derived reconstruction was produced", readme)
+            self.assertNotIn("This reconstructs visible geometry", readme)
 
     def test_semantic_diagram_delivery_is_editable_and_rerunnable(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -279,10 +319,11 @@ class DeliveryAssemblerTests(unittest.TestCase):
             self.assertEqual(len(list((delivery / "LICENSES").iterdir())), 1)
             self.assertIn("No result", readme)
             self.assertIn("`blocked`", readme)
+            self.assertIn("The required original input was not published.", readme)
             self.assertFalse((delivery / "figures/fig-03").exists())
             self.assertFalse(any(path.is_dir() and not any(path.iterdir()) for path in delivery.rglob("*")))
 
-    def test_scientific_status_matrix_rejects_false_claims(self) -> None:
+    def test_scientific_status_matrix_rejects_inconsistent_states(self) -> None:
         invalid = [
             ("partial", "passed", "supported"),
             ("complete", "passed", "partially-supported"),
@@ -304,6 +345,60 @@ class DeliveryAssemblerTests(unittest.TestCase):
                     completed = run_assembler(fixture.plan([target]), root / "out", check=False)
                     self.assertEqual(completed.returncode, 2)
                     self.assertFalse((root / "out/example-study-reproduction").exists())
+
+    def test_validated_target_requires_concise_validation_basis(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            target = fixture.target("fig-01", executable=False, reference=False)
+            target["validationBasis"] = []
+            completed = run_assembler(fixture.plan([target]), root / "out", check=False)
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("requires validationBasis", completed.stderr)
+
+    def test_not_run_target_requires_blocker_but_not_validation_basis(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            target = fixture.blocked_target("fig-01")
+            target.pop("blocker")
+            completed = run_assembler(fixture.plan([target]), root / "out", check=False)
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("requires a concise blocker", completed.stderr)
+
+    def test_mechanism_and_alternative_routes_do_not_force_assumptions(self) -> None:
+        for route in ("mechanism-reproduction", "alternative-validation"):
+            with self.subTest(route=route):
+                with tempfile.TemporaryDirectory() as raw:
+                    root = Path(raw)
+                    fixture = Fixture(root)
+                    target = fixture.target("fig-01", executable=False, reference=False)
+                    target["route"] = route
+                    target["materialAssumptions"] = []
+                    delivery = Path(
+                        json.loads(run_assembler(fixture.plan([target]), root / "out").stdout)["path"]
+                    )
+                    readme = (delivery / "README.md").read_text(encoding="utf-8")
+                    self.assertIn(f"`{route}`", readme)
+                    self.assertIn("Material assumptions:** None declared.", readme)
+
+    def test_route_must_match_target_kind_and_blocked_state(self) -> None:
+        cases = (
+            ("image-derived", "direct-recompute", "complete"),
+            ("semantic-diagram", "mechanism-reproduction", "complete"),
+            ("quantitative", "image-derived-reconstruction", "complete"),
+            ("quantitative", "original-case-blocked", "complete"),
+        )
+        for kind, route, operational in cases:
+            with self.subTest(kind=kind, route=route):
+                with tempfile.TemporaryDirectory() as raw:
+                    root = Path(raw)
+                    fixture = Fixture(root)
+                    target = fixture.target("fig-01", kind=kind, executable=False, reference=False)
+                    target["route"] = route
+                    target["operationalStatus"] = operational
+                    completed = run_assembler(fixture.plan([target]), root / "out", check=False)
+                    self.assertEqual(completed.returncode, 2)
 
     def test_non_scientific_status_matrix_rejects_impossible_combinations(self) -> None:
         for kind in ("image-derived", "semantic-diagram"):
