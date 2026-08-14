@@ -2,7 +2,7 @@
 
 Apply this reference to the selected route and the next useful actions, not hypothetical alternatives. Safe local work should proceed; ask only when new authority or a material scientific choice is required.
 
-The global cost governor still applies inside automatic bounds. Before expanding investigation with another search branch, subagent, broad probe, or additional scientific run, name internally the unknown and continue only when its answer can change the route, claim, safety, material cost, or required deliverable. Normal reads and commands inside the chosen step need no separate justification. Permission to act is not a reason to spend cost without information gain.
+The global cost governor still applies inside automatic bounds. Automatic permission is not a workflow trigger: missing information or preference for author-native evidence alone does not justify lookup or download. Before expanding investigation with another search branch, subagent, broad probe, or additional scientific run, name internally the unknown and continue only when its answer can change the route, claim, safety, material cost, or required deliverable. Normal reads and commands inside the chosen step need no separate justification. Permission to act is not a reason to spend cost without information gain.
 
 ## Automatic work
 

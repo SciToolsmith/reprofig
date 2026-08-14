@@ -1,16 +1,30 @@
 # Source, data, and environment investigation
 
-Use this reference only when a named uncertainty about external code, data, formulas, or execution capability can change the route, supported claim, safety, material cost, or required deliverable. Begin with the target-dependent generation chain and stop when another check cannot change a decision.
+Use this reference only when a named uncertainty about external code, data, formulas, or execution capability can change the route, supported claim, safety, material cost, or required deliverable. Missingness alone never triggers network discovery. Begin with the target-dependent generation chain and stop when another check cannot change a decision.
 
-## Govern investigation cost
+## Start locally and keep only decision-changing gaps
 
-Before expanding investigation with another search branch, subagent, broad probe, or additional scientific run, name internally the unknown it will resolve and the decision it can change. Normal reads and commands inside the chosen branch need no per-call justification or narration. Prefer one authoritative check over parallel archaeology. Do not reopen a settled question merely to collect more sources.
+Read the target caption, target-relevant paper sections, supplement/code/data statements, and user-supplied or already-local artifacts before discovery. Do not audit the whole paper merely to make a complete missing-information list. Treat an explicit paper-cited external artifact as directed retrieval, not permission for broader discovery; retrieve it only when its role in the target chain is material.
 
-Delegate only an independently bounded specialist question that materially benefits from parallel work. Pass the minimum paper section, target, source path, and decision context; do not send the whole task or launch duplicate scouts.
+Keep a short transient decision queue containing only: the unresolved fact, the decision it can change, the strongest likely authority, and the next action if it is found or remains absent. Do not turn this queue into a schema, report, customer artifact, or completeness checklist. If no claim-defining item prevents an honest route, reach V0 before external discovery.
 
-Reach a runnable, scientifically defensible route as soon as possible. Do not delay the first useful V0 for exhaustive paper review, dependency inventory, historical version search, or machine-wide discovery.
+## Gate and sequence network work
 
-Treat missing information by scientific consequence, not by completeness. After one bounded authoritative check of the paper and strongest available artifact, if unavailable or unpublished exact original-case input, configuration, parameters, or realization prevents direct recomputation, do not widen archaeology merely to recover it. Continue investigating only when another bounded source is likely to change a declared observable or claim. Otherwise switch immediately to a transparent `mechanism-reproduction` or `alternative-validation` when it still answers the objective, or report the narrower exact-original case as blocked.
+Start a network search branch only when all are true:
+
+- current paper, target, supplied files, and relevant local artifacts do not resolve the fact;
+- the fact can change the route, acceptance, claim, safety, material cost, or required deliverable;
+- a defensible assumption, derivation, or substitute route cannot answer the same objective without it;
+- a specific authoritative public source or artifact is reasonably likely to resolve it;
+- either finding it or confirming its absence changes the next action.
+
+Resolve the highest expected-information item first. Combine only related queue items likely to be answered by the same authoritative source; do not batch unrelated gaps. After every material result, recompute the queue and cancel searches made obsolete by a changed route. Delegate only an independently bounded question that benefits materially from parallel work, and never launch duplicate scouts.
+
+Use this retrieval order: explicit paper or supplement links; author, publisher, official project, institution, funder, or paper-cited repository; then a focused discovery query naming the specific artifact or identity sought. Do not use broad topic search or reverse-image search to evade missing identity. Prefer one authoritative pass over parallel archaeology and never reopen a settled question merely to collect corroboration.
+
+Before download, check the candidate's paper/target identity, authority, version, access and license, expected size and format, execution risk, and the exact queue item it is expected to close. Skip it when metadata, documentation, or a file listing already shows it cannot change the decision. Download the smallest necessary artifact, hash it when useful, inspect it statically before execution, and classify its evidential fit as exact original, partial, official example or paper-defined simulation, declared substitute, irrelevant, or unavailable/restricted. Public availability does not imply redistribution permission.
+
+Stop when the route is scientifically defensible, remaining gaps are non-critical, the strongest authority confirms absence or restriction, or another search cannot change the next action. After one bounded authoritative pass, do not widen archaeology merely to recover unavailable exact input, configuration, parameters, or realization. Switch to transparent `mechanism-reproduction` or `alternative-validation` when either still answers the objective, or report the narrower exact-original case as blocked.
 
 ## Choose evidence for the objective
 
@@ -22,7 +36,7 @@ Native-first is a preference, not a universal rule. An independent derivation or
 
 Prefer authority in this order when applicable: verified user-supplied artifact; author, publisher, or official project; institution or funder repository; paper-cited repository; verified archive; clearly labelled third-party source.
 
-For each source that materially supports execution or interpretation, retain internally its identity, authority, safe locator, version or commit, checked date, hash when useful, access state, license, and redistribution status. Public availability does not imply redistribution permission.
+For each source that materially supports execution or interpretation, retain internally its identity, authority, safe locator, version or commit, checked date, hash when useful, access state, license, and redistribution status.
 
 Use `scripts/inspect_artifact.py` when a local archive or code tree needs deterministic, non-executing inspection. Limit review to target-relevant licenses, dependency declarations, entry points, defaults or randomness capable of changing the result, I/O, network/system effects, install hooks, binaries, unsafe deserialization, and telemetry. Map only relevant source paths to the target's input, preprocessing, method, aggregation, and plotted output.
 
