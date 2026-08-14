@@ -7,6 +7,8 @@ SciRepro is a scientific-figure reproduction Skill for Codex. It traces only the
 
 The outcome may be a successful reproduction, an honestly bounded alternative validation, a useful negative result, or a precise blocker with a path to resolution. A successful command does not by itself support a paper claim.
 
+It handles two kinds of work with different evidence boundaries: when paper context and target-relevant evidence are sufficient, it can reproduce or test the research process that generated a figure; with images alone, it reconstructs only content reliably identifiable in the image. The latter is not a reproduction of the original experiment, data, or paper conclusion.
+
 ## Install and invoke
 
 ```text
@@ -21,9 +23,23 @@ Three input paths are supported, including multiple targets in one task:
 
 - a paper plus uploaded target images;
 - a paper plus figure or panel references, with target acquisition and verification by the Skill;
-- target images alone for explicitly labelled image-derived reconstruction, never presented as recovery of the original experiment, data, or paper conclusion.
+- target images alone, first assessed for whether their pixels contain enough identifiable information for an image-derived reconstruction; otherwise the Skill returns a precise blocker.
 
 Different targets may use different implementations or runtimes. Their successes, failures, and blockers remain independent.
+
+## What kinds of reproduction it performs
+
+The first two inputs support **research-process reproduction or assessment**. SciRepro combines the paper, target figure, and available code, data, and parameters to trace the target-relevant data–method–parameter–plot chain. This research-process reproduction may be a recomputation under original conditions, a mechanism reproduction, an alternative validation, or a blocker when key evidence is absent; one successful run is never presented as proof of every paper claim.
+
+The third input supports **image-derived reconstruction**, which is not conflated with research-process reproduction. SciRepro first assesses identifiability:
+
+- when axes, ticks, legends, and marks are clear enough, it can digitize and redraw visible data within a stated pixel-derived uncertainty;
+- when only some information is identifiable, it reconstructs only the identifiable curves, layout, relative trends, or annotations and preserves what remains unknown;
+- when only appearance is identifiable, it delivers an appearance or layout reconstruction only when that is the user's objective, and labels it accordingly;
+- when essential data, coordinate mapping, or the generating method cannot be identified from pixels and the requested result depends on that information, it states which reproduction cannot be completed and the minimum additional material needed, without guessing missing content;
+- semantic flowcharts and mechanism schematics are terminally handed to `sci-diagram-pptx`.
+
+Thus, redrawing data visible in an image, reconstructing its appearance, and reproducing the research process that generated it are distinct outcomes. SciRepro labels which one was actually achieved.
 
 ## How it works
 
