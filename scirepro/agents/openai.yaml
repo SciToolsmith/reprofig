@@ -1,4 +1,4 @@
 interface:
   display_name: "SciRepro"
-  short_description: "追溯科研图件生成链，执行科学复现并交付可重跑验证结果"
-  default_prompt: "Use $scirepro to hand semantic schematics to $sci-diagram-pptx, otherwise reproduce the requested figures through the strongest honest route, validate their scientific observables, and deliver one rerunnable result folder."
+  short_description: "复现科研图件，验证科学观测，并交付简洁、可重跑、可核查的客户成果"
+  default_prompt: "Use $scirepro to reproduce requested scientific figures through one cost-governed workflow, route semantic schematics terminally, and deliver one concise rerunnable folder."

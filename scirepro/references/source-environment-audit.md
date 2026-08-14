@@ -1,54 +1,58 @@
-# Source, data, and environment audit
+# Source, data, and environment investigation
 
-Use this reference only when external code/data or uncertain execution capability can change the selected route. Begin with the target-dependent generation chain and stop when another check cannot change feasibility, claim scope, material cost, or safety.
+Use this reference only when a named uncertainty about external code, data, formulas, or execution capability can change the route, supported claim, safety, material cost, or required deliverable. Begin with the target-dependent generation chain and stop when another check cannot change a decision.
+
+## Govern investigation cost
+
+Before expanding investigation with another search branch, subagent, broad probe, or additional scientific run, name internally the unknown it will resolve and the decision it can change. Normal reads and commands inside the chosen branch need no per-call justification or narration. Prefer one authoritative check over parallel archaeology. Do not reopen a settled question merely to collect more sources.
+
+Delegate only an independently bounded specialist question that materially benefits from parallel work. Pass the minimum paper section, target, source path, and decision context; do not send the whole task or launch duplicate scouts.
+
+Reach a runnable, scientifically defensible route as soon as possible. Do not delay the first useful V0 for exhaustive paper review, dependency inventory, historical version search, or machine-wide discovery.
 
 ## Choose evidence for the objective
 
-Author code in its native data format and runtime is normally the strongest route for exact or close recomputation. Prefer it when it serves the user’s objective. Do not choose Python merely because it is convenient when the relevant author implementation is MATLAB, R, Julia, Fortran, or a domain solver.
+Author code in its native data format and runtime is normally the strongest evidence-preserving route for exact or close recomputation. Prefer it when it serves the user's objective.
 
-Native-first is an evidence preference, not an end in itself. An independent derivation or reimplementation may be preferable for mechanism testing; a port may be required for portability; a second engine may be valuable for cross-validation. State every substitution, why it serves the objective, what evidence it changes, and which compatibility checks support it. Never imply equivalence merely because both routes run.
+Native-first is a preference, not a universal rule. An independent derivation or implementation may better test a mechanism; a port may be required for portability; a second engine may provide a requested cross-check. State each substitution, why it serves the objective, what evidence boundary changes, and which target-relevant compatibility checks support it. Never imply equivalence merely because both routes run.
 
 ## Source and code
 
-Prefer authority in this order when applicable: user-supplied verified artifact; author/publisher/official project; institution or funder repository; paper-cited repository; verified archive; clearly labelled third-party source.
+Prefer authority in this order when applicable: verified user-supplied artifact; author, publisher, or official project; institution or funder repository; paper-cited repository; verified archive; clearly labelled third-party source.
 
-For each source that materially supports execution or interpretation, record identity, authority, URL or safe locator, version/commit, checked date, hash when available, size, access state, license, and redistribution status. Public availability does not imply redistribution permission.
+For each source that materially supports execution or interpretation, retain internally its identity, authority, safe locator, version or commit, checked date, hash when useful, access state, license, and redistribution status. Public availability does not imply redistribution permission.
 
-Use `scripts/inspect_artifact.py` when a local archive or code tree needs a deterministic, non-executing inventory. Before execution:
+Use `scripts/inspect_artifact.py` when a local archive or code tree needs deterministic, non-executing inspection. Limit review to target-relevant licenses, dependency declarations, entry points, defaults, randomness, I/O, network/system effects, install hooks, binaries, unsafe deserialization, and telemetry. Map only relevant source paths to the target's input, preprocessing, method, aggregation, and plotted output.
 
-1. Preserve and hash the original artifact.
-2. Inspect only relevant licenses, dependency declarations, entry points, defaults, randomness, I/O, network/system effects, install hooks, binaries, unsafe deserialization, and telemetry.
-3. Map relevant source paths to the target’s input, preprocessing, method, aggregation, and plotted output.
-4. Use the smallest bounded smoke test that can distinguish runnable from unavailable; a smoke test is not a reproduced figure.
-5. Preserve compatibility patches as small overlays or diffs and record their scientific effect.
+Use the smallest bounded smoke test that can distinguish runnable from unavailable; it is not a reproduced figure. Preserve necessary compatibility changes as small overlays or diffs and state their scientific effect.
 
 ## Formula and implementation correspondence
 
-Check only mathematical dependencies that can change the selected target or acceptance result. Verify the relevant symbol definitions, units, dimensions, shapes, indices, normalization, signs, initial/boundary conditions, admissible ranges, and parameter values against the paper, implementation, cited primary source, and target behavior.
+Check only mathematical dependencies capable of changing the target or acceptance result: relevant definitions, units, dimensions, shapes, indices, normalization, signs, initial/boundary conditions, admissible ranges, and parameter values. Do not audit every formula in the paper.
 
-If paper and code differ materially, preserve both readings. Compare them when both answer the objective, ask when choosing changes the supported claim, or block when neither reading can be justified. Do not silently correct an expression or select whichever output resembles the published curve.
+If paper and code differ materially, preserve both readings. Compare them when both answer the objective, ask when the choice changes the supported claim, or block when neither can be justified. Never silently correct an expression or select whichever interpretation resembles the published figure.
 
 ## Data identity
 
-Match data by more than topic or filename. Use the paper case, variables/units, sample count or rate, duration, channels/specimen/device IDs, split or segment, preprocessing/calibration, version, hashes, license, and restrictions. Classify the input honestly as exact original, official example, paper-defined simulation, substitute validation data, or unavailable/restricted. Determine likely size and access requirements before retrieval.
+Match data by more than topic or filename. Check only identifiers required to establish the paper case: variables and units, sample count/rate, duration, channels or specimen/device IDs, split/segment, preprocessing/calibration, version, hash, license, and restrictions. Classify the input as exact original, official example, paper-defined simulation, substitute validation data, or unavailable/restricted. Determine material size and access requirements before retrieval.
 
 ## Runtime capability
 
-Probe only the engines, packages/toolboxes, functions, licenses, and hardware required by the route. Use `scripts/probe_environment.py` when its deterministic discovery or supported route-specific probe is useful; do not run its broad inventory unless the user requests one.
+Probe only the engines, packages/toolboxes, functions, licenses, and hardware required by the chosen route. Use `scripts/probe_environment.py` when its deterministic discovery or route-specific probe can resolve a live uncertainty; do not run broad inventory by default.
 
 Distinguish:
 
-- `verified`: the exact route-required capability ran successfully;
-- `available`: a candidate installation or interpreter was found but route capability remains untested;
-- `unknown`: the relevant probe was inconclusive;
+- `verified`: the exact required capability ran successfully;
+- `available`: a candidate installation exists but route capability remains untested;
+- `unknown`: the focused probe was inconclusive;
 - `missing`: the relevant documented search found no candidate.
 
 Do not infer absence from one failed `which`, import, or launcher. A found runtime does not establish its packages, toolbox, license, entry point, or data compatibility.
 
-For an explicit MATLAB live capability probe, pass the exact entrypoint and relevant author `.m`, `.mlx`, or `.p` artifacts. The probe temporarily adds only their existing parent directories, checks named functions and the entrypoint with `exist`, and restores the original MATLAB path with `onCleanup`; it does not recursively scan those directories or execute author code. This prevents nested author source trees from being mistaken for missing functions without turning capability discovery into a route smoke test.
+For MATLAB, pass the exact entrypoint and only relevant author `.m`, `.mlx`, or `.p` artifacts to a live capability probe. Static discovery is not execution evidence. A failed or timed-out native probe leaves the route inconclusive unless a target-relevant fallback reason already justifies a declared substitute; do not silently retry broadly or switch languages.
 
-`probe_environment.py` emits a `scirepro.environment/v2` record that can be frozen directly in a result bundle. Only live-verified runtimes enter `engines`; a statically discovered MATLAB installation remains `available` evidence and leaves the record `partial`. Static availability still preserves the author-native preference. If a live probe falsifies a required MATLAB capability, Python becomes the recommended `declared-fallback` only when a target-relevant fallback reason was recorded; otherwise do not switch runtimes automatically. A live-probe launch failure, timeout, or invalid result is not static availability: it leaves the selected native route inconclusive. A recorded target-relevant fallback reason permits a declared Python substitute; without one, the route needs a new decision instead of silently retrying MATLAB or switching languages. Persisted probe commands and diagnostics use path placeholders, including for entrypoints and author-source directories outside the task workspace.
+For ecosystems without a specialized probe, validate a reviewed absolute executable with the smallest safe route-specific command. Follow [permission-gates.md](permission-gates.md) before proprietary-runtime launch, dependency installation, or binaries with uncertain effects.
 
-For ecosystems not covered by a specialized probe, `probe_environment.py` reports only static discovery and never executes the `PATH` candidate. Validate the chosen route with an explicitly reviewed absolute executable and the smallest safe route-specific smoke command rather than biasing the route toward a better-instrumented language. Follow [permission-gates.md](permission-gates.md) before launching proprietary runtimes, installing dependencies, or executing binaries with uncertain effects.
+Prefer an existing compatible environment. Check host-provided bundled workspace runtime paths before provisioning another copy, then inspect only relevant task or user environments. If none works, create a project-local open-source environment only within permitted bounds. Never change global packages or install or activate proprietary software silently.
 
-Prefer an existing compatible environment. If none works, a project-local open-source environment may be created inside the declared automatic bounds. Never change global packages or install/activate proprietary software silently.
+Keep queries, discarded sources, repository inventories, probe transcripts, machine-wide findings, and diagnostic logs in the transient workspace. The customer folder receives only the selected source/data identity, actual runtime and dependencies needed to rerun, material substitutions, rights, and unresolved capability limits.
