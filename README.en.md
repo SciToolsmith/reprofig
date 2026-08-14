@@ -52,7 +52,7 @@ Confirm target → understand the scientific observable → trace the relevant g
 ```
 
 - Author-native code, data formats, and runtimes are preferred when they best preserve evidence for the objective. An independent derivation, port, or cross-check may be the right route; every substitution is explicit.
-- Only sources, formulas, parameters, data, and environment facts capable of changing the route, conclusion, safety, material cost, or deliverable are investigated. Missing details are handled by scientific consequence, and investigation stops when more evidence cannot change a decision.
+- Missingness alone does not trigger network discovery. SciRepro uses the paper, target, and supplied materials first; it searches only for unresolved facts that can change the route, conclusion, safety, material cost, or deliverable, and cancels obsolete searches after each material result.
 - Safe, create-only, bounded local work proceeds without a pre-execution webpage or approval ceremony. Login, payment, restricted resources, upload, overwrite, publication, or a material scientific choice still requires the user.
 - The first scientifically useful V0 is produced and preserved early. Investigation expands to another search branch, delegation, broad probe, or scientific run only when it can resolve a named unknown that changes a decision.
 - Sensitivity analysis is used only when the claim or interpretation of a negative result depends on robustness. There is no fixed universal iteration count.
