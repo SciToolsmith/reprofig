@@ -239,6 +239,68 @@ class RepositoryContractTests(unittest.TestCase):
         for required in ("Use $skill-installer", "Use $scirepro", "customer"):
             self.assertIn(required, english)
 
+    def test_readmes_distinguish_scientific_reproduction_from_image_only_work(self) -> None:
+        """Image-only redraws must not be advertised as paper-backed reproduction."""
+        chinese = (REPO / "README.md").read_text(encoding="utf-8")
+        english = (REPO / "README.en.md").read_text(encoding="utf-8")
+
+        for readme, paper_pattern, image_pattern in (
+            (
+                chinese,
+                r"(?is)论文.{0,220}(?:数据|方法|参数).{0,220}(?:科学|研究).{0,120}复现",
+                r"(?is)(?:仅目标图片|仅图片|目标图片).{0,260}(?:可辨识|可识别|像素).{0,260}(?:图像派生|数字化|重绘|外观)",
+            ),
+            (
+                english,
+                r"(?is)paper.{0,220}(?:data|method|parameter).{0,220}(?:scientific|research).{0,120}reproduc",
+                r"(?is)(?:target images? alone|images? alone|target images?).{0,260}(?:identifi|pixel).{0,260}(?:image-derived|digitiz|redraw|appearance)",
+            ),
+        ):
+            self.assertRegex(readme, paper_pattern)
+            self.assertRegex(readme, image_pattern)
+
+    def test_image_only_route_assesses_identifiability_before_selecting_a_route(self) -> None:
+        skill_text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            skill_text,
+            r"(?is)(?:target images? alone|pixels without reliable paper context).{0,900}?(?:assess|determine|classify).{0,160}?(?:identifi|recoverab)",
+        )
+        self.assertRegex(
+            skill_text,
+            r"(?is)(?:non[- ]?identifi|not.{0,80}identifi|insufficient.{0,100}(?:pixel|image|observable)).{0,700}?original-case-blocked",
+        )
+
+    def test_image_only_reference_has_honest_identifiability_outcomes(self) -> None:
+        reference = (SKILL / "references" / "image-derived-reconstruction.md").read_text(encoding="utf-8")
+
+        # The labels may evolve; each branch is checked by the evidence it permits.
+        for outcome_pattern in (
+            r"(?is)(?:data[- ]identifi|(?:legible|calibrated).{0,140}(?:axis|coordinate).{0,160}(?:digitiz|data))",
+            r"(?is)(?:partial(?:ly)?[- ]identifi|(?:only|partly).{0,100}(?:identifiable|recoverable|visible).{0,120}(?:part|portion|subset))",
+            r"(?is)(?:appearance[- ]only|(?:geometry|layout|style).{0,120}(?:only|without).{0,120}(?:data|method|scientific))",
+            r"(?is)(?:non[- ]?identifi|insufficient.{0,120}(?:pixel|image|information)|cannot.{0,120}(?:recover|reconstruct)).{0,260}(?:block|stop|required|need)",
+        ):
+            self.assertRegex(reference, outcome_pattern)
+
+        self.assertRegex(
+            reference,
+            r"(?is)digitiz.{0,180}(?:never|do not|must not).{0,180}(?:original (?:data|observation)|raw data)",
+        )
+        self.assertRegex(
+            reference,
+            r"(?is)(?:pixel|image).{0,260}(?:never|do not|does not).{0,260}(?:scientific conclusion|paper claim)",
+        )
+        self.assertRegex(
+            reference,
+            r"(?is)(?:reproduce this image|unqualified request).{0,240}(?:not permission|must not|do not).{0,240}appearance",
+        )
+        self.assertRegex(
+            reference,
+            r"(?is)(?:do not|never).{0,100}(?:reverse-search|reverse search).{0,180}(?:blocker|bounded|identifier)",
+        )
+        self.assertRegex(reference, r"(?is)semantic schematics?.{0,160}(?:terminal|sci-diagram-pptx)")
+
     def test_generated_cache_files_are_not_tracked(self) -> None:
         completed = subprocess.run(
             ["git", "ls-files"], cwd=REPO, text=True, capture_output=True, check=True,
