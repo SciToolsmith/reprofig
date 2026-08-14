@@ -33,7 +33,9 @@ Ask before:
 - login, MFA, CAPTCHA, account creation, click-through terms, payment, VPN, controlled data, private repositories, or a DUA;
 - proprietary/system/global installation, activation, native binaries or install hooks with unclear effects, elevated containers, or privileges;
 - overwrite, upload, publication, redistribution, external messaging, or contacting authors/journals;
-- a material choice between defensible routes, or a route change that alters data, formula, method, assumption, metric, or supported claim.
+- a material choice between defensible routes that would change the user's objective, scientific claim, evidence boundary, or required deliverable and cannot be resolved from the supplied evidence.
+
+Do not pause merely because a transparent non-critical assumption is needed, or because unavailable exact-original details require an honest switch to `mechanism-reproduction` or `alternative-validation` that still answers the user's stated objective. Proceed within the automatic bounds, disclose the changed evidence boundary, and ask only if the alternatives would answer materially different questions or support materially different claims.
 
 An installed proprietary runtime is not gated merely because it is proprietary. Determine whether bounded local use is already authorized; ask only when activation, shared licensing, remote submission, purchase, or uncertain startup effects matter.
 

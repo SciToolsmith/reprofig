@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 
-PLAN_SCHEMA = "scirepro.delivery-plan/v1"
+PLAN_SCHEMA = "scirepro.delivery-plan/v2"
 MAX_PLAN_BYTES = 1024 * 1024
 MAX_FILE_BYTES = 256 * 1024 * 1024
 MAX_TOTAL_BYTES = 1024 * 1024 * 1024
@@ -38,6 +38,14 @@ MAX_ARCHIVE_EXPANDED_BYTES = 512 * 1024 * 1024
 
 DISTRIBUTIONS = {"local-private", "shareable"}
 TARGET_KINDS = {"quantitative", "image-derived", "semantic-diagram", "other"}
+ROUTES = {
+    "direct-recompute",
+    "mechanism-reproduction",
+    "alternative-validation",
+    "image-derived-reconstruction",
+    "original-case-blocked",
+    "semantic-diagram-handoff",
+}
 OPERATIONAL_STATUSES = {"complete", "partial", "failed", "blocked", "cancelled"}
 VALIDATION_STATUSES = {
     "passed", "partially-passed", "failed", "inconclusive", "not-run",
@@ -129,6 +137,15 @@ def _list_of_lines(value: object, label: str) -> List[str]:
     require(isinstance(value, list), f"{label} must be a list")
     require(len(value) <= 100, f"{label} contains too many entries")
     return [_human_line(item, f"{label}[{index}]") for index, item in enumerate(value)]
+
+
+def _concise_list(value: object, label: str) -> List[str]:
+    require(isinstance(value, list), f"{label} must be a list")
+    require(len(value) <= 12, f"{label} contains too many entries")
+    return [
+        _human_line(item, f"{label}[{index}]", 500)
+        for index, item in enumerate(value)
+    ]
 
 
 def _human_line(value: object, label: str, limit: int = 2000) -> str:
@@ -354,6 +371,12 @@ def _artifact_list(label: str, links: Sequence[ArtifactLink]) -> Optional[str]:
     return f"- **{label}:** " + ", ".join(_link_text(link) for link in links)
 
 
+def _inline_list(values: Sequence[str], empty: str) -> str:
+    if not values:
+        return empty
+    return "; ".join(_markdown(value) for value in values)
+
+
 def _build_readme(plan: dict, targets: List[dict], shared: List[CopyArtifact], licenses: List[CopyArtifact]) -> str:
     lines = [
         f"# {_markdown(plan['title'])}",
@@ -364,14 +387,15 @@ def _build_readme(plan: dict, targets: List[dict], shared: List[CopyArtifact], l
         "",
         "## Results",
         "",
-        "| Target | Type | Operational | Validation | Claim | Main result |",
-        "|---|---|---|---|---|---|",
+        "| Target | Type | Route | Operational | Validation | Claim | Main result |",
+        "|---|---|---|---|---|---|---|",
     ]
     for target in targets:
         lines.append(
             "| " + " | ".join((
                 f"`{target['id']}` — {_markdown(target['title'])}",
                 f"`{target['kind']}`",
+                f"`{target['route']}`",
                 f"`{target['operationalStatus']}`",
                 f"`{target['validationStatus']}`",
                 f"`{target['claimStatus']}`",
@@ -386,19 +410,32 @@ def _build_readme(plan: dict, targets: List[dict], shared: List[CopyArtifact], l
             "",
             _markdown(target["conclusion"]),
             "",
+            f"- **Route:** `{target['route']}`",
             f"- **Operational:** `{target['operationalStatus']}`",
             f"- **Validation:** `{target['validationStatus']}`",
             f"- **Scientific claim:** `{target['claimStatus']}`",
+            "- **Validation basis:** "
+            + _inline_list(target["validationBasis"], "Not run."),
+            "- **Material assumptions:** "
+            + _inline_list(target["materialAssumptions"], "None declared."),
         ])
+        if target["blocker"]:
+            lines.append(f"- **Blocker:** {_markdown(target['blocker'])}")
         if target["mainLink"] is None:
             lines.append("- **Main result:** No result")
         else:
             lines.append(f"- **Main result:** {_link_text(target['mainLink'])}")
         if target["kind"] == "image-derived":
-            lines.append(
-                "- **Evidence boundary:** This reconstructs visible geometry, values, or appearance; "
-                "it does not recover or validate the original data, method, experiment, or scientific conclusion."
-            )
+            if target["mainLink"] is None:
+                lines.append(
+                    "- **Evidence boundary:** No image-derived reconstruction was produced; "
+                    "the supplied pixels did not identify the information required for the requested result."
+                )
+            else:
+                lines.append(
+                    "- **Evidence boundary:** This reconstructs visible geometry, values, or appearance; "
+                    "it does not recover or validate the original data, method, experiment, or scientific conclusion."
+                )
         elif target["kind"] == "semantic-diagram":
             lines.append(
                 "- **Evidence boundary:** Validation concerns schematic fidelity and editability, "
@@ -557,6 +594,37 @@ def _validate_statuses(target: dict) -> None:
     )
 
 
+def _validate_route(target: dict) -> None:
+    kind = target["kind"]
+    route = target["route"]
+    operational = target["operationalStatus"]
+    if kind == "semantic-diagram":
+        require(
+            route == "semantic-diagram-handoff",
+            f"{target['id']} semantic-diagram requires semantic-diagram-handoff",
+        )
+    elif kind == "image-derived":
+        require(
+            route in {"image-derived-reconstruction", "original-case-blocked"},
+            f"{target['id']} image-derived target has an incompatible route: {route}",
+        )
+    else:
+        require(
+            route in {
+                "direct-recompute",
+                "mechanism-reproduction",
+                "alternative-validation",
+                "original-case-blocked",
+            },
+            f"{target['id']} scientific target has an incompatible route: {route}",
+        )
+    if route == "original-case-blocked":
+        require(
+            operational == "blocked" and target["validationStatus"] == "not-run",
+            f"{target['id']} original-case-blocked requires blocked execution and validation not-run",
+        )
+
+
 def assemble(plan_path: Path, output_root: Path) -> Path:
     plan_path = plan_path.expanduser()
     if not plan_path.is_absolute():
@@ -637,14 +705,16 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
             raw_target,
             {
                 "id", "title", "kind", "operationalStatus", "validationStatus",
-                "claimStatus", "conclusion", "mainResult", "reference",
+                "claimStatus", "route", "validationBasis", "materialAssumptions",
+                "blocker", "conclusion", "mainResult", "reference",
                 "implementation", "parameters", "evidence", "dependencies",
                 "dependencyNote", "rerunArgv", "limitations", "rights",
             },
             {
                 "id", "title", "kind", "operationalStatus", "validationStatus",
-                "claimStatus", "conclusion", "mainResult", "implementation",
-                "parameters", "evidence", "dependencies", "limitations", "rights",
+                "claimStatus", "route", "validationBasis", "materialAssumptions",
+                "conclusion", "mainResult", "implementation", "parameters",
+                "evidence", "dependencies", "limitations", "rights",
             },
             label,
         )
@@ -657,19 +727,41 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
             "id": target_id,
             "title": _human_line(raw_target["title"], f"{label}.title", 200),
             "kind": _single_line(raw_target["kind"], f"{label}.kind", 40),
+            "route": _single_line(raw_target["route"], f"{label}.route", 64),
             "operationalStatus": _single_line(raw_target["operationalStatus"], f"{label}.operationalStatus", 40),
             "validationStatus": _single_line(raw_target["validationStatus"], f"{label}.validationStatus", 40),
             "claimStatus": _single_line(raw_target["claimStatus"], f"{label}.claimStatus", 40),
             "conclusion": _human_line(raw_target["conclusion"], f"{label}.conclusion", 1000),
+            "validationBasis": _concise_list(
+                raw_target["validationBasis"], f"{label}.validationBasis"
+            ),
+            "materialAssumptions": _concise_list(
+                raw_target["materialAssumptions"], f"{label}.materialAssumptions"
+            ),
             "limitations": _list_of_lines(raw_target["limitations"], f"{label}.limitations"),
             "rights": _human_line(raw_target["rights"], f"{label}.rights", 1000),
             "dependencyNote": None,
+            "blocker": None,
         }
         require(target["kind"] in TARGET_KINDS, f"unsupported target kind: {target['kind']}")
+        require(target["route"] in ROUTES, f"unsupported route for {target_id}: {target['route']}")
         require(target["operationalStatus"] in OPERATIONAL_STATUSES, f"unsupported operational status for {target_id}")
         require(target["validationStatus"] in VALIDATION_STATUSES, f"unsupported validation status for {target_id}")
         require(target["claimStatus"] in CLAIM_STATUSES, f"unsupported claim status for {target_id}")
         _validate_statuses(target)
+        _validate_route(target)
+        if raw_target.get("blocker") is not None:
+            target["blocker"] = _human_line(raw_target["blocker"], f"{label}.blocker", 500)
+        if target["validationStatus"] == "not-run":
+            require(
+                bool(target["blocker"]),
+                f"{target_id} validation not-run requires a concise blocker",
+            )
+        else:
+            require(
+                bool(target["validationBasis"]),
+                f"{target_id} {target['validationStatus']} validation requires validationBasis",
+            )
         target["mainLink"] = None
         if raw_target["mainResult"] is None:
             require(

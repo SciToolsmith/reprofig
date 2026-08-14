@@ -1,4 +1,4 @@
 interface:
   display_name: "SciRepro"
   short_description: "复现科研过程或重构可辨识图像，并交付简洁、可重跑、可核查的成果"
-  default_prompt: "Use $scirepro to reproduce or assess requested scientific figures, distinguish research-process reproduction from image-derived reconstruction, route semantic schematics terminally, and deliver one concise rerunnable folder."
+  default_prompt: "Use $scirepro to reproduce or assess requested scientific figures, handle unknowns by their effect on declared observables, reach an early V0 with transparent assumptions where defensible, distinguish image-derived work, route semantic schematics terminally, and deliver one concise rerunnable folder."

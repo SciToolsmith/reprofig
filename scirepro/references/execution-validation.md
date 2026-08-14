@@ -22,6 +22,18 @@ Do not initialize the customer folder before useful persistent results exist. Do
 
 Verify formulas and parameters only as far as the target and acceptance decision require. Preserve derivations, ambiguities, and material paper-code differences. A semantic scientific schematic that reaches execution was misrouted; return it to [diagram-handoff.md](diagram-handoff.md) without creating a SciRepro result for that target.
 
+## Handle unknowns by scientific consequence
+
+The role of an unknown is target-dependent. Classify it by whether plausible choices can change a declared observable, acceptance decision, or supported claim:
+
+- **Claim-defining or otherwise material:** resolve, derive, or bound it. If plausible choices could reverse the conclusion, use the smallest discriminating comparison; block only the requested claim that still depends on unavailable information.
+- **Nuisance but consequential:** choose a value constrained by the paper, author code, visible observables, or a defensible domain convention, mark it `assumed`, and test a small alternative only when acceptance could change.
+- **Incidental:** fix a non-critical seed, another reproducible value, or a reasonable presentation choice once and continue. Do not search for the author's exact seed or realization when it cannot affect the scientific decision.
+
+Choose assumptions before final comparison where practical and state their basis and claim boundary. Never describe an assumption as recovered from the authors, tune it solely for visual resemblance, or select seeds, inputs, runs, or parameter combinations because they look favorable. Multiple plausible assumptions producing the same declared phenomenon can support a mechanism result; materially conflicting outcomes require a bounded sensitivity check or an inconclusive conclusion.
+
+Treat any target feature used to estimate, select, or calibrate an assumed parameter as calibration evidence, not independent validation. Validate on another predeclared observable, held-out region or condition, or an external constraint; when none exists, narrow the claim to a calibrated reconstruction or mark the scientific test inconclusive.
+
 ## Define acceptance
 
 For scientific reproduction, evaluate in this order when relevant:
@@ -30,7 +42,7 @@ For scientific reproduction, evaluate in this order when relevant:
 2. qualitative phenomenon, topology, modes, peaks, ordering, or trend;
 3. quantitative values and uncertainty within justified tolerance;
 4. robustness only when the claim or negative interpretation depends on it;
-5. visual encoding and presentation.
+5. visual encoding and presentation needed to preserve meaning and readability.
 
 Set tolerances before inspecting final outputs where practical. For image-derived work, validate only identifiable coordinate calibration, geometry/topology, annotations, panels, appearance, or editability, including uncertainty from resolution, marks, occlusion, compression, and antialiasing.
 
@@ -43,7 +55,9 @@ For a small local target whose actual computation is expected to take seconds or
 Compare V0 at two levels:
 
 - scientific: variables, units, scale, trends, peaks, extrema, ordering, magnitude, uncertainty, and relevant robustness;
-- presentation: palette, marks, legend, typography, layout, clipping, overlap, contrast, and readability.
+- presentation: fix semantic encoding, overlap, clipping, contrast, or unreadable labels when needed; treat exact palette, typography, spacing, and rendering details as secondary unless the declared objective makes them material.
+
+Once the scientific content is stable, correct only presentation defects that hide or misstate it. Stop when the figure communicates the accepted observables clearly; do not reopen scientific tuning merely to improve cosmetic resemblance.
 
 Diagnose each material discrepancy. Before expanding investigation with another search branch, subagent, broad probe, or additional scientific run, name internally the unknown or hypothesis and how its answer can change the route, claim, safety, material cost, or required deliverable. This branch-level check needs no ledger, artifact, or user-facing narration. Record scientifically meaningful changes and predictions internally; do not preserve unnecessary cosmetic versions.
 

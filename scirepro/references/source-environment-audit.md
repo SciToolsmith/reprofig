@@ -10,6 +10,8 @@ Delegate only an independently bounded specialist question that materially benef
 
 Reach a runnable, scientifically defensible route as soon as possible. Do not delay the first useful V0 for exhaustive paper review, dependency inventory, historical version search, or machine-wide discovery.
 
+Treat missing information by scientific consequence, not by completeness. After one bounded authoritative check of the paper and strongest available artifact, if unavailable or unpublished exact original-case input, configuration, parameters, or realization prevents direct recomputation, do not widen archaeology merely to recover it. Continue investigating only when another bounded source is likely to change a declared observable or claim. Otherwise switch immediately to a transparent `mechanism-reproduction` or `alternative-validation` when it still answers the objective, or report the narrower exact-original case as blocked.
+
 ## Choose evidence for the objective
 
 Author code in its native data format and runtime is normally the strongest evidence-preserving route for exact or close recomputation. Prefer it when it serves the user's objective.
@@ -22,7 +24,7 @@ Prefer authority in this order when applicable: verified user-supplied artifact;
 
 For each source that materially supports execution or interpretation, retain internally its identity, authority, safe locator, version or commit, checked date, hash when useful, access state, license, and redistribution status. Public availability does not imply redistribution permission.
 
-Use `scripts/inspect_artifact.py` when a local archive or code tree needs deterministic, non-executing inspection. Limit review to target-relevant licenses, dependency declarations, entry points, defaults, randomness, I/O, network/system effects, install hooks, binaries, unsafe deserialization, and telemetry. Map only relevant source paths to the target's input, preprocessing, method, aggregation, and plotted output.
+Use `scripts/inspect_artifact.py` when a local archive or code tree needs deterministic, non-executing inspection. Limit review to target-relevant licenses, dependency declarations, entry points, defaults or randomness capable of changing the result, I/O, network/system effects, install hooks, binaries, unsafe deserialization, and telemetry. Map only relevant source paths to the target's input, preprocessing, method, aggregation, and plotted output.
 
 Use the smallest bounded smoke test that can distinguish runnable from unavailable; it is not a reproduced figure. Preserve necessary compatibility changes as small overlays or diffs and state their scientific effect.
 
