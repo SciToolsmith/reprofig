@@ -149,6 +149,8 @@ class ProbeEnvironmentTests(unittest.TestCase):
             root = Path(temporary)
             workspace = root / "workspace"
             workspace.mkdir()
+            empty_path = root / "empty-path"
+            empty_path.mkdir()
             script = workspace / "analysis.jl"
             script.write_text("println(1)\n", encoding="utf-8")
 
@@ -159,7 +161,7 @@ class ProbeEnvironmentTests(unittest.TestCase):
                 "--substitute-runtime", "python",
                 "--substitute-role", "fallback-primary",
                 "--substitute-reason", "Use a transparent mechanism implementation only if Julia is unavailable.",
-                path="/usr/bin:/bin",
+                path=str(empty_path),
                 home=root,
             )
 
