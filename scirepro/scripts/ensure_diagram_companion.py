@@ -52,11 +52,44 @@ def reject_symlink_or_wrong_type(path: Path, *, expected: str) -> None:
         raise CompanionError(f"required file is missing or invalid: {path}")
 
 
+def reject_symlinked_descendant(root: Path, relative: str, *, expected: str) -> Path:
+    """Validate every component below an already validated root."""
+    cursor = root
+    parts = Path(relative).parts
+    for index, part in enumerate(parts):
+        cursor = cursor / part
+        reject_symlink_or_wrong_type(
+            cursor,
+            expected=expected if index == len(parts) - 1 else "directory",
+        )
+    return cursor
+
+
+def reject_symlinked_absolute_path(path: Path, *, expected: str) -> None:
+    """Reject user-controlled symlink ancestors, allowing only macOS root aliases."""
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    cursor = Path(absolute.anchor)
+    for index, part in enumerate(absolute.parts[1:], start=1):
+        candidate = cursor / part
+        if candidate.is_symlink():
+            if index == 1 and candidate.parent == Path(candidate.anchor):
+                try:
+                    resolved = candidate.resolve(strict=True)
+                except OSError as exc:
+                    raise CompanionError(f"unavailable system path alias: {candidate}") from exc
+                if not resolved.is_dir():
+                    raise CompanionError(f"system path alias is not a directory: {candidate}")
+                cursor = resolved
+                continue
+            raise CompanionError(f"refusing symlink ancestor at {candidate}")
+        cursor = candidate
+    reject_symlink_or_wrong_type(cursor, expected=expected)
+
+
 def validate_skill(skill_dir: Path) -> None:
     reject_symlink_or_wrong_type(skill_dir, expected="directory")
     for relative in REQUIRED_FILES:
-        candidate = skill_dir / relative
-        reject_symlink_or_wrong_type(candidate, expected="file")
+        reject_symlinked_descendant(skill_dir, relative, expected="file")
 
     skill_md = skill_dir / "SKILL.md"
     try:
@@ -70,18 +103,12 @@ def validate_skill(skill_dir: Path) -> None:
         raise CompanionError("companion SKILL.md has an unexpected name")
 
 
-def installer_path(home: Path) -> Path:
-    return home / "skills" / ".system" / "skill-installer" / "scripts" / "install-skill-from-github.py"
-
-
-def safe_process_detail(value: str) -> str:
-    detail = " ".join(value.split())
-    return detail[:500]
-
-
 def install_companion(home: Path, skills_root: Path) -> None:
-    installer = installer_path(home)
-    reject_symlink_or_wrong_type(installer, expected="file")
+    installer = reject_symlinked_descendant(
+        skills_root,
+        ".system/skill-installer/scripts/install-skill-from-github.py",
+        expected="file",
+    )
     command = [
         sys.executable,
         str(installer),
@@ -98,23 +125,34 @@ def install_companion(home: Path, skills_root: Path) -> None:
         "--method",
         INSTALL_METHOD,
     ]
-    installer_env = os.environ.copy()
-    installer_env.pop("GITHUB_TOKEN", None)
-    installer_env.pop("GH_TOKEN", None)
+    # This is an anonymous, pinned public download. Do not expose arbitrary
+    # caller credentials, proxy userinfo, project variables, or shell hooks to
+    # the installer process.
+    installer_env = {
+        "PATH": os.defpath,
+        "LANG": "C",
+        "LC_ALL": "C",
+        "NO_COLOR": "1",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONSAFEPATH": "1",
+    }
+    for name in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"):
+        if os.environ.get(name):
+            installer_env[name] = os.environ[name]
     try:
         completed = subprocess.run(
             command,
             env=installer_env,
-            text=True,
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=180,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CompanionError("companion installer could not complete") from exc
     if completed.returncode != 0:
-        detail = safe_process_detail(completed.stderr) or f"exit {completed.returncode}"
-        raise CompanionError(f"companion installation failed: {detail}")
+        raise CompanionError(f"companion installation failed (exit {completed.returncode})")
 
 
 def result(skill_dir: Path, *, installed_this_run: bool) -> dict[str, object]:
@@ -132,6 +170,8 @@ def main() -> int:
         home = codex_home()
         skills_root = home / "skills"
         skill_dir = skills_root / SKILL_NAME
+
+        reject_symlinked_absolute_path(home, expected="directory")
 
         if skill_dir.exists() or skill_dir.is_symlink():
             validate_skill(skill_dir)

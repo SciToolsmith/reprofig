@@ -73,6 +73,7 @@ Probe only the engines, packages/toolboxes, functions, licenses, and hardware re
 Distinguish installation, authority, prerequisites, and executed capability rather than compressing them into one label:
 
 - `missing`: the relevant documented search found no candidate;
+- `not-discovered`: a narrow PATH-only check found no executable, which is inconclusive rather than proof of absence;
 - `available`: a candidate installation exists but live capability remains untested;
 - `authority-required`: login, activation, shared/floating licensing, remote submission, or another gated effect prevents the probe;
 - `inconclusive`: a bounded probe failed or timed out without distinguishing absence from a transient fault;

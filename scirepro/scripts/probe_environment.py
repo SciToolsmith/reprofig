@@ -11,11 +11,19 @@ import platform
 import plistlib
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
+
+try:
+    from .safe_output import SafeOutputError, write_text_create_only
+except ImportError:  # Direct script execution.
+    from safe_output import SafeOutputError, write_text_create_only
 
 
 SENSITIVE_KEY = re.compile(r"(?i)(?:authorization|cookie|credential|password|secret|session|token)")
@@ -38,6 +46,7 @@ SECRET_TOKEN_TEXT = re.compile(
     r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})"
 )
 URI_USERINFO = re.compile(r"(?i)(https?://)[^/@\s]+@")
+FILE_URI_PATH = re.compile(r"(?i)file:///(?:[^\s\"'`;(),\[\]{}]+)")
 UNIX_USER_PATH = re.compile(r"/(?:Users|home)/[^/\s\"']+")
 WINDOWS_USER_PATH = re.compile(r"(?i)[A-Z]:[\\/]+Users[\\/]+[^\\/\s\"']+")
 GENERIC_UNIX_ABSOLUTE_PATH = re.compile(
@@ -59,8 +68,8 @@ ARTIFACT_RUNTIME_CANDIDATES = {
     ".m": ("matlab", "octave"),
     ".mlx": ("matlab",),
     ".p": ("matlab",),
-    ".r": ("r", "rscript"),
-    ".rmd": ("r", "rscript"),
+    ".r": ("r",),
+    ".rmd": ("r",),
     ".jl": ("julia",),
     ".py": ("python",),
     ".js": ("node",),
@@ -77,6 +86,9 @@ NATIVE_EXECUTABLE_MAGICS = {
     b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",  # universal Mach-O
     b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca",  # universal Mach-O 64
 }
+PYTHON_EXECUTABLE_NAME = re.compile(
+    r"(?i)^(?:python|pypy)(?:\d+(?:\.\d+)*)?(?:[-_][A-Za-z0-9._-]+)?(?:\.exe)?$"
+)
 
 
 def is_within(path: Path, root: Path) -> bool:
@@ -190,6 +202,14 @@ def redact_text(
     result = WINDOWS_USER_PATH.sub(r"C:\\Users\\$USER", result)
     result = URI_USERINFO.sub(r"\1[REDACTED]@", result)
     result = SENSITIVE_QUERY.sub(r"\1[REDACTED]", result)
+    result = FILE_URI_PATH.sub("file:///$ABSOLUTE_PATH", result)
+    if any(pattern.search(result) for pattern in (
+        SECRET_SHAPED_TEXT,
+        PRIVATE_KEY_TEXT,
+        ASSIGNED_SECRET_TEXT,
+        SECRET_TOKEN_TEXT,
+    )):
+        return "[REDACTED_SECRET_OUTPUT]"
     # Exact task paths above preserve useful placeholders. These final guards
     # ensure unexpected runtime diagnostics cannot persist another absolute
     # machine path while the record claims pathsRedacted=true.
@@ -263,35 +283,101 @@ def run(
         private_paths.append(cmd[0])
     replacements = exact_path_replacements(private_paths, workspace)
     public_cmd = public_command(cmd, workspace, replacements)
+    process: subprocess.Popen[bytes] | None = None
+    stdout_tail = bytearray()
+    stderr_tail = bytearray()
+
+    def drain(stream: object, destination: bytearray) -> None:
+        try:
+            while True:
+                block = stream.read(64 * 1024)  # type: ignore[attr-defined]
+                if not block:
+                    break
+                destination.extend(block)
+                if len(destination) > MAX_RAW_PROBE_TAIL:
+                    del destination[:-MAX_RAW_PROBE_TAIL]
+        except (OSError, ValueError):
+            # A forced process-group shutdown may close a pipe while a drain
+            # thread is blocked. The bounded tail already captured is enough.
+            return
+
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=environment or minimal_environment(),
             cwd=working_directory,
+            start_new_session=(os.name == "posix"),
         )
-        raw_stdout = result.stdout[-MAX_RAW_PROBE_TAIL:]
+        assert process.stdout is not None and process.stderr is not None
+        stdout_thread = threading.Thread(target=drain, args=(process.stdout, stdout_tail), daemon=True)
+        stderr_thread = threading.Thread(target=drain, args=(process.stderr, stderr_tail), daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+        timed_out = False
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            if os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            else:
+                process.terminate()
+            try:
+                process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
+            # The direct process may exit on SIGTERM while a descendant in the
+            # same group ignores it. Always terminate the remaining group.
+            if os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            elif process.poll() is None:
+                process.kill()
+            if process.poll() is None:
+                process.wait()
+        if not timed_out and os.name == "posix":
+            # A probe wrapper can exit successfully after spawning background
+            # work. Its entire fresh process group is part of the bounded
+            # probe and must not survive the direct child.
+            group_existed = False
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                group_existed = True
+            except ProcessLookupError:
+                pass
+            if group_existed:
+                time.sleep(0.05)
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        stdout_thread.join(timeout=0.75)
+        stderr_thread.join(timeout=0.75)
+        if stdout_thread.is_alive() or stderr_thread.is_alive():
+            if os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            stdout_thread.join(timeout=0.25)
+            stderr_thread.join(timeout=0.25)
+        process.stdout.close()
+        process.stderr.close()
+        raw_stdout = bytes(stdout_tail).decode("utf-8", errors="replace")
+        raw_stderr = bytes(stderr_tail).decode("utf-8", errors="replace")
         report = {
             "command": public_cmd,
-            "returncode": result.returncode,
-            "stdout": result.stdout.strip()[:4000],
-            "stderr": result.stderr.strip()[:2000],
-            "timedOut": False,
-        }
-    except subprocess.TimeoutExpired as exc:
-        timeout_stdout = exc.stdout or ""
-        if isinstance(timeout_stdout, bytes):
-            timeout_stdout = timeout_stdout.decode("utf-8", errors="replace")
-        raw_stdout = timeout_stdout[-MAX_RAW_PROBE_TAIL:]
-        report = {
-            "command": public_cmd,
-            "returncode": None,
-            "stdout": (exc.stdout or "")[:4000] if isinstance(exc.stdout, str) else "",
-            "stderr": (exc.stderr or "")[:2000] if isinstance(exc.stderr, str) else "",
-            "timedOut": True,
+            "returncode": None if timed_out else process.returncode,
+            "stdout": raw_stdout.strip()[-4000:],
+            "stderr": raw_stderr.strip()[-2000:],
+            "timedOut": timed_out,
         }
     except OSError as exc:
         raw_stdout = ""
@@ -410,6 +496,8 @@ def selected_python_executable(raw: str, workspace: Path, allow_workspace: bool)
         raise ValueError("does not resolve to an accessible executable file") from exc
     if stat.S_ISLNK(resolved_metadata.st_mode) or not stat.S_ISREG(resolved_metadata.st_mode):
         raise ValueError("must resolve to a regular non-symlink executable")
+    if PYTHON_EXECUTABLE_NAME.fullmatch(resolved.name) is None:
+        raise ValueError("must resolve to a recognizable Python interpreter executable")
 
     workspace_controlled = is_lexically_within(candidate, workspace) or is_within(resolved, workspace)
     venv_root = workspace_venv_root(candidate) if workspace_controlled else None
@@ -829,11 +917,17 @@ def native_route_recommendation(
     if not author_native_runtime:
         if ambiguous_artifacts:
             artifact_hint = "ambiguous-runtime-artifact"
-            rationale = (
-                "At least one author .m artifact is compatible with both MATLAB and GNU Octave. "
-                "Identify the intended author-native runtime from target-relevant evidence before probing or "
-                "selecting a substitute."
-            )
+            if any(str(item.get("suffix", "")).lower() == ".m" for item in implementation_artifacts):
+                rationale = (
+                    "At least one author .m artifact is compatible with both MATLAB and GNU Octave. "
+                    "Identify the intended author-native runtime from target-relevant evidence before probing or "
+                    "selecting a substitute."
+                )
+            else:
+                rationale = (
+                    "At least one author artifact has more than one plausible runtime. Identify the intended "
+                    "author-native runtime from target-relevant evidence before probing or selecting a substitute."
+                )
         elif candidate_runtimes:
             artifact_hint = "runtime-candidates-require-confirmation"
             rationale = (
@@ -892,6 +986,8 @@ def native_route_recommendation(
         for entry in route_entries
     )
     prerequisites_present = any(entry.get("prerequisitesPresent") for entry in route_entries)
+    path_only_runtime = author_native_runtime in {"r", "rscript", "julia", "octave", "node"}
+    native_not_discovered = path_only_runtime and not route_entries
     if route_verified:
         native_status = "verified"
     elif runtime_verified:
@@ -900,6 +996,8 @@ def native_route_recommendation(
         native_status = "failed"
     elif route_entries:
         native_status = "available"
+    elif native_not_discovered:
+        native_status = "not-discovered"
     else:
         native_status = "missing"
     native_available = native_status in {"available", "runtime-verified", "verified"}
@@ -919,6 +1017,8 @@ def native_route_recommendation(
         native_capability_status = "inconclusive"
     elif native_available:
         native_capability_status = "available-untested"
+    elif native_not_discovered:
+        native_capability_status = "inconclusive"
     else:
         native_capability_status = "unavailable"
     capability_missing = native_capability_status == "missing"
@@ -953,6 +1053,10 @@ def native_route_recommendation(
         recommended_runtime = None
         recommended_route_kind = "native-probe-inconclusive"
         next_action = "one-bounded-diagnostic-or-route-decision"
+    elif native_not_discovered:
+        recommended_runtime = None
+        recommended_route_kind = "native-runtime-not-discovered"
+        next_action = "locate-reviewed-native-runtime-or-decide-route"
     elif native_missing:
         recommended_runtime = None
         recommended_route_kind = "native-runtime-missing"
@@ -980,7 +1084,10 @@ def native_route_recommendation(
             "runtimeCandidates",
             ARTIFACT_RUNTIME_CANDIDATES.get(str(item.get("suffix", "")).lower(), ()),
         ))
-        if not candidates or author_native_runtime in candidates:
+        compatible = author_native_runtime in candidates
+        if author_native_runtime == "rscript" and "r" in candidates:
+            compatible = True
+        if not candidates or compatible:
             compatible_artifacts.append(item["path"])
         else:
             conflicting_artifacts.append(item["path"])
@@ -1010,7 +1117,7 @@ def native_route_recommendation(
         "substituteEligible": substitute_declared,
         "substitutePrimaryEligible": substitute_primary_eligible,
         "nextAction": next_action,
-        "decisionRequired": native_probe_failed and not use_declared_fallback,
+        "decisionRequired": (native_probe_failed and not use_declared_fallback) or native_not_discovered,
         "rationale": (
             f"The objective explicitly requires a portable or independent implementation. {substitute_runtime} "
             "may be primary "
@@ -1022,6 +1129,10 @@ def native_route_recommendation(
             "The author-native runtime is detected but untested. Static availability is not route-execution "
             "evidence and cannot justify a silent substitute; run the smallest bounded runtime/route probe next."
             if native_status == "available" else
+            "The selected generic runtime was not found in PATH-only discovery. This does not prove absence from "
+            "custom installations and cannot authorize a fallback by itself; locate a reviewed executable or make "
+            "an explicit route decision."
+            if native_not_discovered else
             "The live native prerequisite probe found a required route capability missing; the explicit scientific "
             f"fallback reason makes {substitute_runtime} eligible as a declared substitute, not as an equivalent "
             "native route."
@@ -1894,8 +2005,10 @@ def main() -> int:
         indent=2,
     ) + "\n"
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(payload, encoding="utf-8")
+        try:
+            write_text_create_only(args.output, payload)
+        except SafeOutputError as exc:
+            parser.error(str(exc))
     else:
         sys.stdout.write(payload)
     return 0

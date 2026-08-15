@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -120,6 +121,181 @@ class ProbeEnvironmentTests(unittest.TestCase):
             self.assertFalse(entry["verified"])
             self.assertIsNone(entry["probe"])
             self.assertIn("static-only", entry["probeSkipped"])
+
+    def test_r_artifact_is_one_runtime_ecosystem_not_matlab_ambiguity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            script = workspace / "analysis.R"
+            script.write_text("print('analysis')\n", encoding="utf-8")
+
+            completed = self.run_probe(
+                workspace,
+                "--author-artifact", str(script),
+                path="/usr/bin:/bin",
+                home=root,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            recommendation = json.loads(completed.stdout)["routeRecommendation"]
+            self.assertEqual(recommendation["candidateNativeRuntimes"], ["r"])
+            self.assertEqual(recommendation["artifactHint"], "runtime-candidates-require-confirmation")
+            self.assertNotIn("MATLAB", recommendation["rationale"])
+            self.assertNotIn("Octave", recommendation["rationale"])
+
+    def test_path_only_miss_does_not_claim_generic_runtime_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            empty_path = root / "empty-path"
+            empty_path.mkdir()
+            script = workspace / "analysis.jl"
+            script.write_text("println(1)\n", encoding="utf-8")
+
+            completed = self.run_probe(
+                workspace,
+                "--author-artifact", str(script),
+                "--author-native-runtime", "julia",
+                "--substitute-runtime", "python",
+                "--substitute-role", "fallback-primary",
+                "--substitute-reason", "Use a transparent mechanism implementation only if Julia is unavailable.",
+                path=str(empty_path),
+                home=root,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            recommendation = json.loads(completed.stdout)["routeRecommendation"]
+            self.assertEqual(recommendation["nativeRuntimeStatus"], "not-discovered")
+            self.assertEqual(recommendation["nativeRouteCapabilityStatus"], "inconclusive")
+            self.assertFalse(recommendation["nativeRouteRejected"])
+            self.assertIsNone(recommendation["recommendedRuntime"])
+            self.assertFalse(recommendation["substitutePrimaryEligible"])
+            self.assertTrue(recommendation["decisionRequired"])
+            self.assertEqual(
+                recommendation["nextAction"],
+                "locate-reviewed-native-runtime-or-decide-route",
+            )
+            self.assertIn("does not prove absence", recommendation["rationale"])
+
+    def test_output_is_create_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            output = root / "probe.json"
+            output.write_text("sentinel\n", encoding="utf-8")
+
+            completed = self.run_probe(workspace, "--output", str(output), home=root)
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(output.read_text(encoding="utf-8"), "sentinel\n")
+
+    def test_explicit_non_python_native_binary_is_rejected_without_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+
+            completed = self.run_probe(
+                workspace,
+                "--python-executable",
+                "/bin/echo",
+                home=root,
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("recognizable Python interpreter", completed.stderr)
+
+    def test_probe_output_redacts_secrets_and_file_uris(self) -> None:
+        from scirepro.scripts.probe_environment import redact_text, run
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "workspace"
+            workspace.mkdir()
+            report = run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-S",
+                    "-c",
+                    "print('API_KEY=supersecretvalue')",
+                ],
+                5,
+                workspace,
+            )
+
+            self.assertEqual(report["stdout"], "[REDACTED_SECRET_OUTPUT]")
+            private_uri = "file:///Volumes/private-lab/secret/data.mat"
+            redacted = redact_text(private_uri, workspace)
+            self.assertNotIn("private-lab", redacted)
+            self.assertEqual(redacted, "file:///$ABSOLUTE_PATH")
+
+    @unittest.skipUnless(os.name == "posix", "process-group termination requires POSIX")
+    def test_probe_timeout_terminates_sigterm_ignoring_descendants(self) -> None:
+        from scirepro.scripts.probe_environment import run
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            marker = root / "descendant-survived.txt"
+            child_code = (
+                "import pathlib,signal,time;"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                "time.sleep(2);"
+                f"pathlib.Path({str(marker)!r}).write_text('survived')"
+            )
+            parent_code = (
+                "import subprocess,sys,time;"
+                f"subprocess.Popen([sys.executable,'-c',{child_code!r}]);"
+                "time.sleep(30)"
+            )
+            started = time.monotonic()
+
+            report = run(
+                [sys.executable, "-I", "-S", "-c", parent_code],
+                1,
+                workspace,
+            )
+
+            self.assertTrue(report["timedOut"])
+            self.assertLess(time.monotonic() - started, 3.0)
+            time.sleep(2.2)
+            self.assertFalse(marker.exists(), "timed-out descendants must not outlive the probe")
+
+    @unittest.skipUnless(os.name == "posix", "process-group termination requires POSIX")
+    def test_successful_probe_cannot_leave_background_descendants(self) -> None:
+        from scirepro.scripts.probe_environment import run
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            marker = root / "background-survived.txt"
+            child_code = (
+                "import pathlib,signal,time;"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                "time.sleep(1);"
+                f"pathlib.Path({str(marker)!r}).write_text('survived')"
+            )
+            parent_code = (
+                "import subprocess,sys;"
+                f"subprocess.Popen([sys.executable,'-c',{child_code!r}],"
+                "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)"
+            )
+
+            report = run(
+                [sys.executable, "-I", "-S", "-c", parent_code],
+                5,
+                workspace,
+            )
+
+            self.assertEqual(report["returncode"], 0)
+            self.assertFalse(report["timedOut"])
+            time.sleep(1.2)
+            self.assertFalse(marker.exists(), "successful probes must not leave background work")
 
     def test_explicit_real_interpreter_is_verified_with_isolation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -541,7 +717,7 @@ class ProbeEnvironmentTests(unittest.TestCase):
 
     def test_r_and_julia_artifacts_preserve_generic_native_runtime_metadata(self) -> None:
         cases = (
-            ("analysis.R", "rscript", "Rscript", ["r", "rscript"]),
+            ("analysis.R", "rscript", "Rscript", ["r"]),
             ("analysis.jl", "julia", "julia", ["julia"]),
         )
         for filename, runtime, executable_name, candidates in cases:

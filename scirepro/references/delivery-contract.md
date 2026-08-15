@@ -132,10 +132,14 @@ extra in the standard customer folder.
 An executed scientific target with `complete` or `partial` operational status must deliver at least
 one real `sourceFiles` entry and a runnable final `entrypoint`. `entrypoint`, `rerunArgv`,
 `rerunOutputs`, and `dependencyNote` occur together. The entrypoint must be one of the target's
-delivered source paths and must be invoked by the command. `rerunOutputs` names only the main result
+delivered source paths, must contain real source rather than a renamed raster/binary, and must be the
+program the README command actually invokes. Runtime safety flags such as Python isolation or
+bytecode controls are fine; inline evaluation and decoy drivers are not. Every explicit file input
+named by the command must also be present in the delivery. `rerunOutputs` names only the main result
 and explicitly requested additional outputs, and must include the main result. Diagnostics and
 regenerated tables should require an explicit optional flag and must not appear during the default
-rerun.
+rerun. The chosen runtime must also agree with the entrypoint type; for example, Python cannot be
+listed as the runner for a MATLAB `.m` entrypoint.
 
 A completed image-derived or semantic reconstruction may omit a runnable entrypoint only when its
 main result is itself an editable production artifact (for example PPTX, SVG, or Draw.io). A lone
@@ -145,8 +149,9 @@ Single-target deliveries are flat beside `README.md` and may not use `common/`. 
 deliveries use `<target-id>/` directly under the root—not `figures/<target-id>/`. Bytes genuinely
 used by at least two distinct targets appear once in `common/` and are referenced as
 `{"commonRef":"name.ext"}`. Target IDs may not collide with `common`, `LICENSES`, or `README.md`.
-Licenses appear in `LICENSES/` only when required by included third-party material. Empty
-directories are never created.
+Common files are shared dependencies or inputs, not mutable results: each target keeps its own main
+result and rerun outputs. Licenses appear in `LICENSES/` only when required by included third-party
+material. Empty directories are never created.
 
 ## Scientific consistency remains internal
 
@@ -171,8 +176,11 @@ only the first three. Ordinary generated-file boilerplate is not shown in the RE
 section appears only when included target material is not generated; required license files are
 listed separately.
 
-The assembler preserves the existing fail-closed protections for unsafe names, duplicate
-destinations/content, symlinks, special files, secret-shaped text, oversized plans/files, private
-local paths, nonportable rerun arguments, rights-incompatible public files, and the internal plan.
-ZIP and tar packages are traversed with bounded member/expanded-size limits; nested or unsupported
-compressed packages fail closed. It emits no customer manifest or webpage.
+The assembler keeps secrets (including those encoded in common Unicode text forms), private machine
+paths, the internal plan (including hardlinks or byte copies), and process-only packages out of
+customer files. It also rejects unsafe names, duplicate destinations/content, symlinks, special
+files, oversized material, nonportable rerun arguments, and rights-incompatible public files. ZIP
+and tar packages share bounded aggregate member/expanded-size budgets; nested, unsupported, or
+suspiciously compressed packages fail closed. Output publication is create-only, and a symlinked
+output ancestor cannot redirect or partially populate another location. It emits no customer
+manifest or webpage.
