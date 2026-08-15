@@ -1,16 +1,8 @@
 # Customer delivery contract
 
-Use `<skill-root>/scripts/assemble_delivery.py` only after the scientific work is finished. It creates a
-small customer folder from an explicit internal whitelist; it does not copy the transient
-workspace, a report site, a log tree, or the plan itself.
-
-## Contents
-
-- [Command](#command)
-- [Plan](#plan)
-- [Artifact entries](#artifact-entries)
-- [Customer layout](#customer-layout)
-- [Selection rule](#selection-rule)
+Use `<skill-root>/scripts/assemble_delivery.py` only after the scientific work is finished. It
+creates one small customer folder from a fresh whitelist. It never copies the transient
+workspace, internal plan, probe records, logs, QA tree, or search history.
 
 ## Command
 
@@ -20,25 +12,40 @@ python <skill-root>/scripts/assemble_delivery.py \
   --output-root /path/to/customer-deliveries
 ```
 
-The only successful output is `<output-root>/<slug>-reproduction/`. Publication is
-create-only. The assembler writes a sibling staging directory, validates it, and performs an
-atomic no-replace rename. It never updates or repairs an existing delivery.
+Success creates `<output-root>/<slug>-reproduction/` once. Publication is staged and atomic;
+an existing destination is never changed.
 
-## Plan
+## Minimum customer set
 
-The UTF-8 JSON plan uses `scirepro.delivery-plan/v2` and remains internal:
+Begin with no files and add only:
 
-Plans using `scirepro.delivery-plan/v1` lack route and scientific-basis fields and are
-intentionally rejected; regenerate the internal plan rather than inferring those facts during
-assembly. Existing customer folders need no migration.
+1. the primary result;
+2. files that are indispensable to honestly rerun, open, or edit that result and cannot be
+   reconstructed from another delivered file;
+3. a reference only when rights permit it and direct comparison has customer value;
+4. a supporting result only when the user requested it, needs it for downstream use, or it is
+   the smallest non-redundant comparison that materially explains the conclusion; and
+5. licenses required by included third-party or derivative material.
+
+A file fails this test when it is merely evidence that the internal process occurred. Keep
+validation JSON, environment/license probe records, iteration traces, sensitivity details,
+raw logs, manifests, QA artifacts, temporary downloads, and tables deterministically regenerated
+by the delivered command in the transient workspace by default. Summarize the few facts that
+change interpretation in the README. Do not use a fixed file-count ceiling as a substitute for
+this value test.
+
+## Internal plan
+
+The UTF-8 plan uses `scirepro.delivery-plan/v3` and is never delivered. v1/v2 plans are rejected;
+regenerate them rather than inferring missing customer-value decisions during assembly.
 
 ```json
 {
-  "schemaVersion": "scirepro.delivery-plan/v2",
+  "schemaVersion": "scirepro.delivery-plan/v3",
   "title": "Study figure reproduction",
-  "slug": "study-figures",
+  "slug": "study-figure",
   "distribution": "local-private",
-  "conclusion": "The declared trend and ordering are supported; exact pointwise replay was outside scope.",
+  "conclusion": "The reported trend is supported; exact pointwise replay was outside scope.",
   "shared": [],
   "licenses": [],
   "targets": [
@@ -50,13 +57,45 @@ assembly. Existing customer folders need no migration.
       "validationStatus": "passed",
       "claimStatus": "supported",
       "route": "mechanism-reproduction",
+      "stageDecisions": [
+        {
+          "stage": "input",
+          "materialToClaim": true,
+          "authorNative": "r",
+          "selected": "r",
+          "nativeCapability": "verified",
+          "selectionBasis": "author-native",
+          "reason": "The published R loader reproduced the declared input table.",
+          "evidenceBoundary": null
+        },
+        {
+          "stage": "method",
+          "materialToClaim": true,
+          "authorNative": "matlab",
+          "selected": "matlab",
+          "nativeCapability": "verified",
+          "selectionBasis": "author-native",
+          "reason": "The author method passed a target-relevant MATLAB smoke test.",
+          "evidenceBoundary": null
+        },
+        {
+          "stage": "visualization",
+          "materialToClaim": false,
+          "authorNative": "matlab",
+          "selected": "python",
+          "nativeCapability": "verified",
+          "selectionBasis": "declared-fallback",
+          "reason": "Python produced the requested portable final graphic.",
+          "evidenceBoundary": null
+        }
+      ],
       "validationBasis": [
-        "Peak ordering and response direction agree with the declared target observables."
+        "Peak ordering and response direction meet the declared target checks."
       ],
       "materialAssumptions": [
-        "The unpublished random realization was replaced by a fixed generated seed."
+        "The unpublished realization was replaced by one fixed generated seed."
       ],
-      "conclusion": "The declared direction and ordering agree; pointwise identity was not an acceptance criterion.",
+      "conclusion": "The declared direction and ordering agree; pointwise identity was not tested.",
       "mainResult": {
         "source": "work/result.png",
         "name": "result.png",
@@ -64,177 +103,143 @@ assembly. Existing customer folders need no migration.
       },
       "reference": {
         "source": "work/target.png",
-        "name": "target.png",
+        "name": "reference.png",
         "rights": "local-only"
       },
-      "implementation": [
+      "rerunFiles": [
         {
-          "source": "work/reproduce.py",
-          "name": "reproduce.py",
+          "source": "work/run_pipeline.sh",
+          "name": "run_pipeline.sh",
           "rights": "generated"
-        }
-      ],
-      "parameters": [
+        },
+        {
+          "source": "work/load_input.R",
+          "name": "load_input.R",
+          "rights": "included-permitted"
+        },
+        {
+          "source": "work/method.m",
+          "name": "method.m",
+          "rights": "included-permitted"
+        },
+        {
+          "source": "work/plot.py",
+          "name": "plot.py",
+          "rights": "generated"
+        },
         {
           "source": "work/parameters.json",
           "name": "parameters.json",
           "rights": "generated"
         }
       ],
-      "evidence": [
-        {
-          "source": "work/evidence.csv",
-          "name": "evidence.csv",
-          "rights": "generated"
-        }
-      ],
-      "dependencies": [
-        {
-          "source": "work/requirements.txt",
-          "name": "requirements.txt",
-          "rights": "generated"
-        }
-      ],
-      "rerunArgv": [
-        "python3",
-        "figures/fig-01/reproduce.py",
-        "--config",
-        "figures/fig-01/parameters.json"
-      ],
+      "supportingResults": [],
+      "rerunArgv": ["sh", "run_pipeline.sh", "parameters.json"],
+      "dependencyNote": "R, MATLAB, and Python with the declared route prerequisites.",
       "limitations": ["The original random realization was not published."],
-      "rights": "Generated files are deliverable; the paper crop is private reference only."
+      "rights": "Generated files are deliverable; the reference is local-private."
     }
   ]
 }
 ```
 
-`reference`, `dependencyNote`, `rerunArgv`, and `blocker` are optional. The four artifact-list
-fields may be empty. `route`, `validationBasis`, and `materialAssumptions` are required plan
-fields but add no customer artifact. Keep each list item to one short statement:
+Single-target files are placed directly in the delivery root beside `README.md`. Multi-target
+files use `figures/<target-id>/`; shared bytes appear once in `shared/`, and licenses appear only
+when needed in `LICENSES/`. Therefore rerun paths in the internal plan must match the relevant
+single- or multi-target layout.
 
-- `route` identifies what was actually done: `direct-recompute`, `mechanism-reproduction`,
-  `alternative-validation`, `image-derived-reconstruction`, `original-case-blocked`, or
-  `semantic-diagram-handoff`;
-- `validationBasis` names the tested observable and check that supports the validation status,
-  such as trend, peak location, numeric tolerance, visible geometry, or editability; and
-- `materialAssumptions` records only assumptions capable of changing interpretation. Use an
-  empty list when none were material; never invent an assumption to fill the field.
+`mainResult` is normally required. It may be `null` only for blocked/cancelled work or a failed
+attempt with no useful output. `reference`, `rerunArgv`, `dependencyNote`, and `blocker` are
+optional. `rerunFiles` and `supportingResults` are required arrays and may be empty. If rerun files
+exist, provide exactly one portable `rerunArgv` and one concise `dependencyNote`; otherwise omit
+both.
 
-Every validation result other than `not-run` needs at least one `validationBasis` item. A
-`not-run` target may keep that list empty but must provide a concise `blocker`. Do not require a
-separate evidence file merely to restate these fields. If `implementation` is nonempty, provide
-exactly one `rerunArgv` and either a dependency artifact or one concise `dependencyNote`, such
-as `Python standard library only.` If implementation is empty, omit the command. Re-run
-arguments are interpreted from the delivery root and must use portable relative paths.
+Each `supportingResults` entry is a normal artifact plus one required purpose:
 
-`mainResult` is normally required. It may be `null` only for a `blocked` or `cancelled` target,
-or a failed attempt that produced no useful artifact. The README reports `No result`; the
-assembler does not create a fake placeholder or an empty target directory. Complete and
-partial targets must provide a real main result.
+```json
+{
+  "source": "work/digitized-series.csv",
+  "name": "digitized-series.csv",
+  "rights": "generated",
+  "label": "Digitized visible series",
+  "purpose": "downstream-use"
+}
+```
 
-Allowed target kinds are `quantitative`, `image-derived`, `semantic-diagram`, and `other`.
-Operational, validation, and scientific-claim statuses are deliberately separate. Do not
-upgrade a claim merely because a program ran or a visual check passed. Quantitative and other
-scientific targets use this compact consistency matrix:
+Allowed purposes are `requested-output`, `downstream-use`, and `material-comparison`. None means
+"keep it just in case." A deterministically regenerated table or machine validation record is not
+a supporting result unless the user actually requested it or needs it independently of rerunning.
+
+## Scientific fields
+
+Keep `route`, three statuses, `validationBasis`, and `materialAssumptions` in the internal plan so
+the assembler can reject impossible scientific claims. The generated README translates them into
+plain language; it does not expose schema vocabulary or repeat a single-target summary table.
+
+Routes are `direct-recompute`, `mechanism-reproduction`, `alternative-validation`,
+`image-derived-reconstruction`, `original-case-blocked`, and `semantic-diagram-handoff`.
+`validationBasis` names the actual observable/check; any status other than `not-run` requires at
+least one. `materialAssumptions` contains only assumptions capable of changing interpretation.
+Keep those fields and `limitations` customer-concise (at most 12 one-line entries of 500 characters
+each). A `not-run` target needs a concrete blocker.
+
+Executed scientific targets require `stageDecisions`, with one unique entry for each used stage
+among `input`, `preprocessing`, `method`, `aggregation`, and `visualization`. This represents a
+mixed pipeline directly instead of forcing one target-wide primary engine. Each entry records
+whether the stage is material to the tested claim; the author-native engine when one exists; the
+actually selected engine and resolved native capability; the selection basis and reason; and an
+`evidenceBoundary` when a claim-relevant stage is substituted.
+At least one stage in an executed scientific target must be marked `materialToClaim: true`.
+
+Allowed native capabilities are `missing`, `available-untested`, `prerequisites-present`,
+`verified`, `authority-required`, `unavailable`, `inconclusive`, and `not-applicable`. A
+claim-relevant substitute cannot replace an author-native stage that is available/untested, has
+prerequisites present, or is verified unless the objective is explicitly portability or independent
+implementation. If native execution is unavailable or inconclusive, `declared-fallback` is valid.
+Selecting the author-native engine requires a verified stage smoke test. Replacing a non-material
+visualization stage does not change the scientific evidence boundary and creates no customer-facing
+README noise. The README reports only substitutions actually material to the tested claim, using
+the mandatory `evidenceBoundary` and reason once.
+
+For a stage with no author-native implementation, use `authorNative: null`,
+`nativeCapability: not-applicable`, and `selectionBasis: no-author-native`. Blocked scientific
+targets and non-scientific image/semantic targets use an empty `stageDecisions` list.
+
+Every top-level `shared` artifact must be referenced by at least one target; `shared` is not an
+escape hatch for internal archives. Obvious file paths in `rerunArgv`, including MATLAB/Simulink
+files such as `.m`, `.mlx`, `.p`, and `.slx`, must resolve to whitelisted delivery files. An
+author-native stage may never use `nativeCapability: not-applicable`.
+
+Scientific targets use this consistency matrix:
 
 | Claim | Operational | Validation |
 |---|---|---|
 | `supported` | `complete` | `passed` |
 | `partially-supported` | `complete` or `partial` | `partially-passed` |
 | `unsupported` | `complete` | `failed` |
-| `inconclusive` | attempted: `complete`, `partial`, or `failed` | `inconclusive` |
-| `not-tested` | any truthful operational state | `not-run` |
+| `inconclusive` | attempted | `inconclusive` |
+| `not-tested` | truthful untested state | `not-run` |
 
-`not-tested` and `not-run` occur together. Image-derived reconstructions and semantic diagrams
-use `claimStatus: not-applicable`; their validation status describes reconstruction or
-editability checks, not support for a scientific claim. For those targets, `passed` requires
-complete execution; `partially-passed` requires complete or partial execution; `failed` and
-`inconclusive` require a real attempt; and `not-run` is reserved for blocked, cancelled, or
-failed-before-validation work. The generated README inserts the appropriate evidence-boundary
-statement automatically.
+Image-derived and semantic targets use `claimStatus: not-applicable`; their validation concerns
+visible reconstruction or editability, never a paper claim. `original-case-blocked` requires
+blocked execution and `not-run` validation.
 
-Keep route ownership consistent with the target. Quantitative and other scientific targets use
-the three scientific execution routes or `original-case-blocked`; image-derived targets use
-`image-derived-reconstruction` or `original-case-blocked`; semantic diagrams use
-`semantic-diagram-handoff`. `original-case-blocked` requires blocked execution and `not-run`
-validation. These checks prevent a status-only success from hiding what was actually tested,
-without forcing a larger report or evidence bundle.
+## Artifacts, rights, and safety
 
-## Artifact entries
+An artifact contains `source`, one safe output `name`, `rights`, and an optional human `label`.
+Rights are `generated`, `included-permitted`, `public-domain`, or `local-only`. A `shareable`
+delivery accepts only the first three. A paper PDF or crop with uncertain rights stays out; cite it
+in the conclusion instead.
 
-A copied artifact is an explicit whitelist entry:
+Top-level `shared` and `licenses` use the same artifact form. If targets need identical bytes,
+copy them once into `shared` and use `{"sharedRef":"name.ext"}`. Duplicate content is rejected.
+Empty directories are never created.
 
-```json
-{
-  "source": "internal/path/to/file",
-  "name": "customer-name.ext",
-  "rights": "generated",
-  "label": "Optional human label"
-}
-```
-
-`source` may be absolute or relative to the plan. `name` is one safe basename, not a path.
-Rights must be one of:
-
-- `generated`
-- `included-permitted`
-- `public-domain`
-- `local-only`
-
-Every file in a `shareable` delivery must use the first three statuses. A paper PDF or crop
-with uncertain rights stays out of a shareable plan; cite it in the human conclusion instead.
-
-Top-level `shared` and `licenses` entries use the same artifact form and become `shared/` and
-`LICENSES/`. These directories are omitted when empty.
-
-When multiple targets need identical bytes, copy them once in `shared` and refer to the
-canonical output name instead of adding another source:
-
-```json
-{"sharedRef": "common-requirements.txt", "label": "Shared Python dependencies"}
-```
-
-`sharedRef` may appear wherever a target artifact appears. Any repeated SHA-256 among copied
-entries is rejected rather than silently duplicated. A target directory is created only when
-that target has a local copied artifact; blocked or shared-only targets do not create empty
-directories and remain fully represented in the README.
-
-## Customer layout
-
-```text
-<slug>-reproduction/
-├── README.md
-├── figures/
-│   ├── fig-01/
-│   └── fig-02/
-├── shared/       # only when declared and nonempty
-└── LICENSES/     # only when declared and nonempty
-```
-
-The generated README leads with the overall conclusion, links every main result, keeps the
-three statuses distinct, and concisely states each target's route, validation basis, material
-assumptions, blocker when applicable, limitations, and rights. It contains one shell-quoted
-copyable command for each executable target.
-
-The assembler never inventories the delivery and never emits a manifest. Adding `.DS_Store`
-or another customer-side file later therefore cannot invalidate an immutable file list.
-
-## Selection rule
-
-Whitelist only files that help the customer understand, inspect, edit, or rerun the result:
-
-- the main result and, when permitted, its reference;
-- the implementation, actual parameters or configuration used, actionable dependencies, and smallest evidence that
-  supports the final conclusion;
-- shared inputs or source actually used; and
-- applicable license notices.
-
-Do not include intermediate webpages, route-search material, raw logs, temporary downloads,
-QA overlays, renderer dumps, old revisions, or machine inventories. A log, QA result, or data
-manifest may enter only when intentionally placed in `evidence` because it is itself necessary
-customer evidence.
-
-The assembler rejects unsafe names, duplicate destinations, duplicate content, symlinks,
-special files, secret-shaped text (including inspected text members inside ZIP-based Office
-packages), oversized plans/files/deliveries, nonportable re-run paths, private user-directory
-paths in customer prose or commands, and rights-incompatible shareable files.
+The assembler rejects unsafe names, duplicate destinations/content, symlinks, special files,
+secret-shaped text, oversized plans/files, private local paths, nonportable rerun arguments,
+rights-incompatible public files, and attempts to copy the internal plan. ZIP and tar packages are
+traversed within bounded member and expanded-size limits: every regular member is scanned;
+sensitive names, duplicate/traversing/absolute paths, links, and special members fail closed. Other
+compressed formats and nested compressed members are rejected rather than copied without inspection.
+Customer-visible prose and labels reject local absolute paths while preserving ordinary HTTP(S)
+links. It emits no customer manifest or webpage.

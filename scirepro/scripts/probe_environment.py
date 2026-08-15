@@ -14,12 +14,28 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
 SENSITIVE_KEY = re.compile(r"(?i)(?:authorization|cookie|credential|password|secret|session|token)")
 SENSITIVE_QUERY = re.compile(
     r"(?i)([?&](?:access[_-]?key|api[_-]?key|auth|credential|password|secret|signature|sig|token)=)[^&#\s]+"
+)
+SECRET_SHAPED_TEXT = re.compile(
+    r"(?i)(?:api[_-]?key|access[_-]?key|authorization|credential|password|secret|token)\s*[:=]\s*\S+"
+)
+PRIVATE_KEY_TEXT = re.compile(r"-----BEGIN (?:OPENSSH |RSA |EC |DSA )?PRIVATE KEY-----")
+ASSIGNED_SECRET_TEXT = re.compile(
+    r"(?i)(?:api[_-]?key|access[_-]?key|authorization|bearer|client[_-]?secret|"
+    r"cookie|credential|password|passwd|private[_-]?key|secret|session[_-]?token|"
+    r"access[_-]?token|auth[_-]?token|refresh[_-]?token)\s*[=:]\s*"
+    r"(?:[\"'][^\s\"']{8,}[\"']|[A-Za-z0-9_./+=-]{16,})"
+)
+SECRET_TOKEN_TEXT = re.compile(
+    r"(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|"
+    r"sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|"
+    r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})"
 )
 URI_USERINFO = re.compile(r"(?i)(https?://)[^/@\s]+@")
 UNIX_USER_PATH = re.compile(r"/(?:Users|home)/[^/\s\"']+")
@@ -32,9 +48,28 @@ GENERIC_WINDOWS_ABSOLUTE_PATH = re.compile(
 )
 MATLAB_RELEASE = re.compile(r"(?i)(?:MATLAB[_-])?(R\d{4}[ab])")
 MATLAB_FUNCTION = re.compile(r"^[A-Za-z]\w*(?:\.[A-Za-z]\w*)*$")
+MATLAB_LICENSE_FEATURE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
 MATLAB_PROBE_MARKER = "SCIREPRO_MATLAB_PROBE_JSON:"
 RUNTIME_CHOICES = {"python", "matlab", "r", "rscript", "julia", "octave", "node", "nvidia"}
+ROUTE_RUNTIME_CHOICES = RUNTIME_CHOICES - {"nvidia"}
+SUBSTITUTE_ROLES = {
+    "fallback-primary", "portability-primary", "independent-primary", "cross-check",
+}
+ARTIFACT_RUNTIME_CANDIDATES = {
+    ".m": ("matlab", "octave"),
+    ".mlx": ("matlab",),
+    ".p": ("matlab",),
+    ".r": ("r", "rscript"),
+    ".rmd": ("r", "rscript"),
+    ".jl": ("julia",),
+    ".py": ("python",),
+    ".js": ("node",),
+    ".mjs": ("node",),
+    ".cjs": ("node",),
+}
 MAX_PROBE_TIMEOUT_SECONDS = 60
+MAX_RAW_PROBE_TAIL = 64 * 1024
+MAX_SUBSTITUTE_REASON_CHARACTERS = 500
 NATIVE_EXECUTABLE_MAGICS = {
     b"\x7fELF",  # ELF
     b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf",  # Mach-O, big endian
@@ -221,6 +256,7 @@ def run(
     return_raw: bool = False,
     environment: dict[str, str] | None = None,
     redact_paths: list[str | Path] | None = None,
+    working_directory: Path | None = None,
 ) -> dict | tuple[dict, str]:
     private_paths = list(redact_paths or [])
     if cmd and Path(cmd[0]).is_absolute():
@@ -235,7 +271,9 @@ def run(
             text=True,
             timeout=timeout,
             env=environment or minimal_environment(),
+            cwd=working_directory,
         )
+        raw_stdout = result.stdout[-MAX_RAW_PROBE_TAIL:]
         report = {
             "command": public_cmd,
             "returncode": result.returncode,
@@ -244,6 +282,10 @@ def run(
             "timedOut": False,
         }
     except subprocess.TimeoutExpired as exc:
+        timeout_stdout = exc.stdout or ""
+        if isinstance(timeout_stdout, bytes):
+            timeout_stdout = timeout_stdout.decode("utf-8", errors="replace")
+        raw_stdout = timeout_stdout[-MAX_RAW_PROBE_TAIL:]
         report = {
             "command": public_cmd,
             "returncode": None,
@@ -252,6 +294,7 @@ def run(
             "timedOut": True,
         }
     except OSError as exc:
+        raw_stdout = ""
         report = {
             "command": public_cmd,
             "returncode": None,
@@ -259,7 +302,6 @@ def run(
             "stderr": str(exc),
             "timedOut": False,
         }
-    raw_stdout = report["stdout"]
     redacted = redact_value(report, workspace, path_replacements=replacements)  # type: ignore[assignment]
     return (redacted, raw_stdout) if return_raw else redacted  # type: ignore[return-value]
 
@@ -453,7 +495,61 @@ def matlab_static_metadata(candidate: Path) -> dict | None:
     return metadata or None
 
 
-def selected_matlab_executable(raw: str, *, application: bool) -> dict:
+def matlab_installation_identity(executable: Path) -> dict | None:
+    """Validate a MATLAB installation shape using bounded static product metadata."""
+    if executable.name.casefold() not in {"matlab", "matlab.exe"}:
+        return None
+    if executable.parent.name.casefold() == "bin":
+        installation_root = executable.parent.parent
+    elif (
+        executable.name == "MATLAB"
+        and executable.parent.name == "MacOS"
+        and executable.parent.parent.name == "Contents"
+        and executable.parent.parent.parent.suffix.lower() == ".app"
+    ):
+        installation_root = executable.parent.parent.parent
+    else:
+        return None
+
+    version_info = installation_root / "VersionInfo.xml"
+    if version_info.is_file() and not version_info.is_symlink():
+        try:
+            text = version_info.read_text(encoding="utf-8", errors="replace")[:100_000]
+        except OSError:
+            return None
+        version_match = re.search(r"<version>([^<]+)</version>", text, re.IGNORECASE)
+        release_match = re.search(r"<release>(R\d{4}[ab])</release>", text, re.IGNORECASE)
+        if version_match and release_match:
+            return {
+                "installationRoot": installation_root,
+                "identitySource": version_info,
+                "version": version_match.group(1).strip(),
+                "release": normalize_matlab_release(release_match.group(1)),
+            }
+
+    if installation_root.suffix.lower() == ".app":
+        plist = installation_root / "Contents" / "Info.plist"
+        if plist.is_file() and not plist.is_symlink():
+            try:
+                with plist.open("rb") as handle:
+                    payload = plistlib.load(handle)
+            except (OSError, plistlib.InvalidFileException):
+                return None
+            bundle_identifier = str(payload.get("CFBundleIdentifier") or "")
+            version = payload.get("CFBundleShortVersionString") or payload.get("CFBundleVersion")
+            release_match = MATLAB_RELEASE.search(installation_root.name)
+            if "mathworks" in bundle_identifier.casefold() and version and release_match:
+                value = release_match.group(1)
+                return {
+                    "installationRoot": installation_root,
+                    "identitySource": plist,
+                    "version": str(version),
+                    "release": f"R{value[1:-1]}{value[-1].lower()}",
+                }
+    return None
+
+
+def selected_matlab_executable(raw: str, *, application: bool, workspace: Path) -> dict:
     """Resolve one exact MATLAB application or executable without launching it."""
     supplied = Path(raw)
     if not supplied.is_absolute():
@@ -489,17 +585,44 @@ def selected_matlab_executable(raw: str, *, application: bool) -> dict:
         raise ValueError("MATLAB executable does not resolve to an accessible file") from exc
     if not resolved.is_file():
         raise ValueError("MATLAB executable must resolve to a regular file")
+    if (
+        is_lexically_within(selected, workspace)
+        or is_lexically_within(executable, workspace)
+        or is_within(resolved, workspace)
+    ):
+        raise ValueError("MATLAB selection must not be workspace-controlled or an author-supplied launcher")
+    identity = matlab_installation_identity(executable)
+    if identity is None:
+        raise ValueError(
+            "MATLAB selection must have a recognized installation shape and trusted static product identity"
+        )
     return {
         "selectionKind": selection_kind,
         "selectedPath": selected,
         "invocationPath": executable,
         "resolvedPath": resolved,
+        "installationRoot": identity["installationRoot"],
+        "identitySource": identity["identitySource"],
+        "staticIdentity": {
+            "release": identity["release"],
+            "version": identity["version"],
+        },
     }
 
 
 def matlab_quote(value: str) -> str:
     """Quote a Python string as one MATLAB character vector literal."""
     return "'" + value.replace("'", "''").replace("\r", " ").replace("\n", " ") + "'"
+
+
+def is_regular_non_symlink_file(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
 
 
 def matlab_route_search_directories(
@@ -537,31 +660,32 @@ def normalize_matlab_release(value: object) -> str | None:
 
 def matlab_live_probe_expression(
     required_toolboxes: list[str],
+    required_license_features: list[str],
     required_functions: list[str],
-    entrypoint: Path | None,
-    search_directories: list[Path],
+    _entrypoint: Path | None,
+    _search_directories: list[Path],
 ) -> str:
-    """Build a read-only route-capability probe with a machine-readable result marker."""
+    """Build a read-only runtime/prerequisite probe with a machine-readable result marker."""
     toolbox_cells = "{" + ",".join(matlab_quote(item) for item in required_toolboxes) + "}"
+    license_cells = "{" + ",".join(matlab_quote(item) for item in required_license_features) + "}"
     function_cells = "{" + ",".join(matlab_quote(item) for item in required_functions) + "}"
-    entrypoint_literal = matlab_quote(str(entrypoint)) if entrypoint else "''"
-    path_setup = "p0=path;pc=onCleanup(@()path(p0));" + "".join(
-        f"addpath({matlab_quote(str(directory))},'-begin');" for directory in search_directories
-    )
     return (
         "try;"
-        f"{path_setup}"
+        "p0=path;pc=onCleanup(@()path(p0));restoredefaultpath;"
         "v=ver;"
-        "tb=arrayfun(@(x)struct('name',x.Name,'version',x.Version),v);"
-        f"rt={toolbox_cells};rf={function_cells};ep={entrypoint_literal};"
-        "tr=arrayfun(@(i)struct('name',rt{i},'installed',any(strcmpi({v.Name},rt{i}))),"
-        "1:numel(rt));"
-        "fr=arrayfun(@(i)struct('name',rf{i},'exists',exist(rf{i},'file')>0),"
+        f"rt={toolbox_cells};rl={license_cells};rf={function_cells};"
+        "tr=repmat(struct('name','','installed',false,'version',''),1,numel(rt));"
+        "for i=1:numel(rt);tr(i).name=rt{i};j=find(strcmpi({v.Name},rt{i}),1);"
+        "if ~isempty(j);tr(i).installed=true;tr(i).version=v(j).Version;end;end;"
+        "lr=arrayfun(@(i)struct('feature',rl{i},'available',logical(license('test',rl{i}))),"
+        "1:numel(rl));"
+        "fc=arrayfun(@(i)exist(rf{i},'file'),1:numel(rf));"
+        "fr=arrayfun(@(i)struct('name',rf{i},'existCode',fc(i),"
+        "'exists',any(fc(i)==[2,3,6])),"
         "1:numel(rf));"
-        "if isempty(ep);er=struct('path','','exists',true);"
-        "else;er=struct('path',ep,'exists',exist(ep,'file')>0);end;"
-        "o=struct('release',version('-release'),'version',version,'toolboxes',tb,"
-        "'requiredToolboxes',tr,'requiredFunctions',fr,'entrypoint',er);"
+        "o=struct('release',version('-release'),'version',version,"
+        "'cleanPathReset',true,'requiredToolboxes',tr,'requiredLicenseFeatures',lr,"
+        "'requiredFunctions',fr);"
         "clear pc;"
         f"fprintf('{MATLAB_PROBE_MARKER}%s\\n',jsonencode(o));"
         "catch ME;"
@@ -594,6 +718,28 @@ def matlab_probe_environment() -> dict[str, str]:
     return environment
 
 
+def validated_substitute_reason(value: str) -> str:
+    reason = value.strip()
+    if not reason:
+        raise ValueError("must contain a non-empty scientific or deliverable reason")
+    if len(reason) > MAX_SUBSTITUTE_REASON_CHARACTERS:
+        raise ValueError(f"must be at most {MAX_SUBSTITUTE_REASON_CHARACTERS} characters")
+    if "\n" in reason or "\r" in reason:
+        raise ValueError("must be a single line")
+    if any(ord(character) < 32 or ord(character) == 127 for character in reason):
+        raise ValueError("must not contain control characters")
+    if any(pattern.search(reason) for pattern in (
+        SECRET_SHAPED_TEXT,
+        PRIVATE_KEY_TEXT,
+        ASSIGNED_SECRET_TEXT,
+        SECRET_TOKEN_TEXT,
+        SENSITIVE_QUERY,
+        URI_USERINFO,
+    )):
+        raise ValueError("must not contain secret-shaped text")
+    return reason
+
+
 def author_artifact_records(raw_values: list[str], workspace: Path) -> list[dict]:
     records = []
     seen: set[Path] = set()
@@ -604,44 +750,131 @@ def author_artifact_records(raw_values: list[str], workspace: Path) -> list[dict
         if path in seen:
             continue
         seen.add(path)
+        suffix = path.suffix.lower()
+        runtime_candidates = list(ARTIFACT_RUNTIME_CANDIDATES.get(suffix, ()))
         records.append({
             "path": display_invocation_path(path, workspace),
-            "suffix": path.suffix.lower(),
+            "suffix": suffix,
             "exists": path.is_file(),
+            "artifactKind": (
+                "data" if suffix == ".mat" else
+                "implementation" if runtime_candidates else
+                "unknown"
+            ),
+            "runtimeCandidates": runtime_candidates,
+            "runtimeAmbiguous": len(runtime_candidates) > 1,
         })
     return records
 
 
 def native_route_recommendation(
     artifacts: list[dict],
-    matlab_entries: list[dict],
-    python_fallback_reason: str | None,
+    runtime_entries: dict[str, list[dict]] | list[dict],
+    substitute_reason: str | None = None,
+    substitute_role: str | None = None,
+    *,
+    author_native_runtime: str | None = None,
+    substitute_runtime: str | None = None,
+    author_runtime_selection_source: str | None = None,
+    legacy_python_arguments_used: bool = False,
 ) -> dict:
-    matlab_implementation_artifacts = [
-        item for item in artifacts if item["exists"] and item["suffix"] in {".m", ".mlx", ".p"}
+    """Recommend a route only after the author-native runtime is explicit.
+
+    Artifact suffixes are candidate metadata, not runtime identity. In
+    particular, ``.m`` is shared by MATLAB and GNU Octave. ``runtime_entries``
+    may be a mapping for the generic API; accepting a list preserves the old
+    internal MATLAB-only call shape without restoring suffix inference.
+    """
+    implementation_artifacts = [
+        item for item in artifacts
+        if item.get("exists") and item.get("suffix") != ".mat"
     ]
-    matlab_data_artifacts = [item for item in artifacts if item["exists"] and item["suffix"] == ".mat"]
-    if not matlab_implementation_artifacts:
+    data_artifacts = [
+        item for item in artifacts if item.get("exists") and item.get("suffix") == ".mat"
+    ]
+    candidate_runtimes = sorted({
+        runtime
+        for item in implementation_artifacts
+        for runtime in item.get(
+            "runtimeCandidates",
+            ARTIFACT_RUNTIME_CANDIDATES.get(str(item.get("suffix", "")).lower(), ()),
+        )
+    })
+    ambiguous_artifacts = [
+        item["path"] for item in implementation_artifacts
+        if len(item.get(
+            "runtimeCandidates",
+            ARTIFACT_RUNTIME_CANDIDATES.get(str(item.get("suffix", "")).lower(), ()),
+        )) > 1
+    ]
+    substitute_declared = bool(substitute_runtime and substitute_reason and substitute_role)
+    python_alias_active = substitute_runtime == "python"
+
+    def compatibility_fields(primary_eligible: bool) -> dict:
+        return {
+            # Deprecated aliases retained so old consumers can migrate without
+            # making Python the conceptual default of the generic router.
+            "pythonRole": (
+                substitute_role if python_alias_active else
+                "fallback-or-cross-check"
+                if substitute_runtime is None and author_native_runtime == "matlab" else
+                "not-selected"
+            ),
+            "pythonFallbackEligible": substitute_declared and python_alias_active,
+            "pythonPrimaryEligible": primary_eligible and python_alias_active,
+            "pythonFallbackReason": substitute_reason if python_alias_active else None,
+            "legacyPythonArgumentsUsed": legacy_python_arguments_used,
+        }
+
+    if not author_native_runtime:
+        if ambiguous_artifacts:
+            artifact_hint = "ambiguous-runtime-artifact"
+            rationale = (
+                "At least one author .m artifact is compatible with both MATLAB and GNU Octave. "
+                "Identify the intended author-native runtime from target-relevant evidence before probing or "
+                "selecting a substitute."
+            )
+        elif candidate_runtimes:
+            artifact_hint = "runtime-candidates-require-confirmation"
+            rationale = (
+                "Artifact suffixes provide runtime candidates but do not establish the author-native runtime. "
+                "Confirm it from target-relevant documentation, syntax, dependencies, or an intended launcher."
+            )
+        elif data_artifacts:
+            artifact_hint = "data-format-only"
+            rationale = "A .mat data file identifies a data format, not the author-native runtime."
+        else:
+            artifact_hint = None
+            rationale = "No explicit target-relevant author-native runtime was supplied."
         return {
             "evaluated": False,
             "authorNativeRuntime": None,
+            "authorNativeRuntimeSelectionSource": None,
+            "candidateNativeRuntimes": candidate_runtimes,
+            "ambiguousAuthorArtifactPaths": ambiguous_artifacts,
             "nativePriorityApplied": False,
             "recommendedRuntime": None,
-            "pythonRole": "undetermined",
-            "pythonFallbackEligible": False,
-            "pythonFallbackReason": python_fallback_reason,
-            "artifactHint": "matlab-data-format-only" if matlab_data_artifacts else None,
-            "rationale": (
-                "A .mat data file alone does not prove that the author implementation is MATLAB."
-                if matlab_data_artifacts else "No author artifact identified a native runtime."
-            ),
+            "recommendedRouteKind": None,
+            "substituteRuntime": substitute_runtime,
+            "substituteRole": substitute_role,
+            "substituteReason": substitute_reason,
+            "substituteEligible": False,
+            "substitutePrimaryEligible": False,
+            "nextAction": "identify-author-native-runtime",
+            "artifactHint": artifact_hint,
+            "rationale": rationale,
+            **compatibility_fields(False),
         }
 
+    if isinstance(runtime_entries, list):
+        entries_by_runtime = {"matlab": runtime_entries}
+    else:
+        entries_by_runtime = runtime_entries
+    all_native_entries = list(entries_by_runtime.get(author_native_runtime, []))
     # An exact selection is the route that was actually tested. Do not let a
     # different, merely discovered installation hide a failed selected probe.
-    selected_entries = [entry for entry in matlab_entries if entry.get("explicitSelection")]
-    route_entries = selected_entries or matlab_entries
-    statuses = {entry.get("verificationStatus", "available") for entry in route_entries}
+    selected_entries = [entry for entry in all_native_entries if entry.get("explicitSelection")]
+    route_entries = selected_entries or all_native_entries
     live_probe_failures = {
         "probe-command-failed", "probe-timed-out", "probe-output-invalid",
     }
@@ -650,19 +883,30 @@ def native_route_recommendation(
         and entry.get("failureReason") in live_probe_failures
         for entry in route_entries
     )
-    if any(entry.get("runtimeVerified") for entry in route_entries):
+    route_verified = any(
+        entry.get("routeSmokeTested") and entry.get("routeCapabilityVerified")
+        for entry in route_entries
+    )
+    runtime_verified = any(
+        entry.get("runtimeVerified") or entry.get("verified")
+        for entry in route_entries
+    )
+    prerequisites_present = any(entry.get("prerequisitesPresent") for entry in route_entries)
+    if route_verified:
         native_status = "verified"
-    elif "needs-user-decision" in statuses:
-        native_status = "needs-user-decision"
+    elif runtime_verified:
+        native_status = "runtime-verified"
     elif native_probe_failed:
         native_status = "failed"
     elif route_entries:
         native_status = "available"
     else:
         native_status = "missing"
-    native_available = native_status in {"available", "verified", "needs-user-decision"}
-    if any(entry.get("routeCapabilityVerified") for entry in route_entries):
+    native_available = native_status in {"available", "runtime-verified", "verified"}
+    if route_verified:
         native_capability_status = "verified"
+    elif prerequisites_present:
+        native_capability_status = "prerequisites-present"
     elif any(
         entry.get("runtimeVerified")
         and entry.get("failureReason") == "route-required-capability-missing"
@@ -671,68 +915,135 @@ def native_route_recommendation(
         native_capability_status = "missing"
     elif native_probe_failed:
         native_capability_status = "inconclusive"
-    elif any(entry.get("runtimeVerified") for entry in route_entries):
-        native_capability_status = "incomplete"
-    elif native_status == "needs-user-decision":
-        native_capability_status = "needs-user-decision"
+    elif runtime_verified:
+        native_capability_status = "inconclusive"
     elif native_available:
-        native_capability_status = "untested"
+        native_capability_status = "available-untested"
     else:
         native_capability_status = "unavailable"
     capability_missing = native_capability_status == "missing"
-    native_route_unusable = capability_missing or native_probe_failed
-    use_declared_fallback = native_route_unusable and bool(python_fallback_reason)
-    if use_declared_fallback:
-        recommended_runtime = "python"
+    native_missing = native_status == "missing"
+    native_route_unusable = native_missing or capability_missing or native_probe_failed
+    objective_substitute = substitute_declared and substitute_role in {
+        "portability-primary", "independent-primary",
+    }
+    declared_fallback = substitute_declared and substitute_role == "fallback-primary"
+    use_declared_fallback = native_route_unusable and declared_fallback
+    if objective_substitute:
+        recommended_runtime = substitute_runtime
+        recommended_route_kind = "declared-substitute"
+        next_action = "execute-declared-substitute"
+    elif route_verified:
+        recommended_runtime = author_native_runtime
+        recommended_route_kind = "author-native"
+        next_action = "execute-native-route"
+    elif prerequisites_present:
+        recommended_runtime = author_native_runtime
+        recommended_route_kind = "author-native"
+        next_action = "run-reviewed-native-smoke"
+    elif use_declared_fallback:
+        recommended_runtime = substitute_runtime
         recommended_route_kind = "declared-fallback"
+        next_action = "execute-declared-fallback"
     elif capability_missing:
         recommended_runtime = None
         recommended_route_kind = "blocked-native-capability"
+        next_action = "declare-substitute-or-block"
     elif native_probe_failed:
         recommended_runtime = None
         recommended_route_kind = "native-probe-inconclusive"
+        next_action = "one-bounded-diagnostic-or-route-decision"
+    elif native_missing:
+        recommended_runtime = None
+        recommended_route_kind = "native-runtime-missing"
+        next_action = "declare-substitute-or-block"
+    elif native_status == "runtime-verified":
+        recommended_runtime = author_native_runtime
+        recommended_route_kind = "author-native"
+        next_action = "run-reviewed-native-smoke"
+    elif native_status == "available":
+        recommended_runtime = author_native_runtime
+        recommended_route_kind = "author-native"
+        next_action = (
+            "live-probe-native-prerequisites"
+            if author_native_runtime == "matlab" else
+            "select-and-run-reviewed-native-smoke"
+        )
     else:
-        recommended_runtime = "matlab" if native_available else None
+        recommended_runtime = author_native_runtime if native_available else None
         recommended_route_kind = "author-native" if native_available else None
+        next_action = "run-reviewed-native-smoke" if runtime_verified else "select-route"
+    compatible_artifacts = []
+    conflicting_artifacts = []
+    for item in implementation_artifacts:
+        candidates = list(item.get(
+            "runtimeCandidates",
+            ARTIFACT_RUNTIME_CANDIDATES.get(str(item.get("suffix", "")).lower(), ()),
+        ))
+        if not candidates or author_native_runtime in candidates:
+            compatible_artifacts.append(item["path"])
+        else:
+            conflicting_artifacts.append(item["path"])
+    substitute_primary_eligible = objective_substitute or use_declared_fallback
     return {
         "evaluated": True,
-        "authorNativeRuntime": "matlab",
-        "authorImplementationArtifactPaths": [item["path"] for item in matlab_implementation_artifacts],
-        "authorDataArtifactPaths": [item["path"] for item in matlab_data_artifacts],
+        "authorNativeRuntime": author_native_runtime,
+        "authorNativeRuntimeSelectionSource": author_runtime_selection_source or "explicit-selection",
+        "candidateNativeRuntimes": candidate_runtimes,
+        "ambiguousAuthorArtifactPaths": ambiguous_artifacts,
+        "authorImplementationArtifactPaths": [item["path"] for item in implementation_artifacts],
+        "authorDataArtifactPaths": [item["path"] for item in data_artifacts],
+        "authorRuntimeCompatibleArtifactPaths": compatible_artifacts,
+        "authorRuntimeConflictingArtifactPaths": conflicting_artifacts,
         "nativeRuntimeStatus": native_status,
         "nativeRouteCapabilityStatus": native_capability_status,
-        "nativePriorityApplied": native_available and not native_route_unusable,
+        "nativePriorityApplied": (
+            recommended_runtime == author_native_runtime and not objective_substitute
+        ),
         "nativeRouteRejected": native_route_unusable,
+        "nativeRouteReady": route_verified,
         "recommendedRuntime": recommended_runtime,
         "recommendedRouteKind": recommended_route_kind,
-        "pythonRole": "fallback-or-cross-check",
-        "pythonFallbackEligible": bool(python_fallback_reason),
-        "pythonPrimaryEligible": (not native_available or native_route_unusable) and bool(python_fallback_reason),
-        "pythonFallbackReason": python_fallback_reason,
-        "decisionRequired": (
-            native_status == "needs-user-decision"
-            or (native_probe_failed and not use_declared_fallback)
-        ),
+        "substituteRuntime": substitute_runtime,
+        "substituteRole": substitute_role,
+        "substituteReason": substitute_reason,
+        "substituteEligible": substitute_declared,
+        "substitutePrimaryEligible": substitute_primary_eligible,
+        "nextAction": next_action,
+        "decisionRequired": native_probe_failed and not use_declared_fallback,
         "rationale": (
-            "The live MATLAB probe found a required route capability missing; the explicit scientific "
-            "fallback reason makes Python eligible as a declared substitute, not as an equivalent native route."
+            f"The objective explicitly requires a portable or independent implementation. {substitute_runtime} "
+            "may be primary "
+            "without pretending to be author-native execution; the changed evidence boundary remains explicit."
+            if objective_substitute else
+            "The author-native prerequisites are present, but the target route itself has not been smoke-tested. "
+            "Run one reviewed target-relevant native operation before treating the route as verified."
+            if prerequisites_present else
+            "The author-native runtime is detected but untested. Static availability is not route-execution "
+            "evidence and cannot justify a silent substitute; run the smallest bounded runtime/route probe next."
+            if native_status == "available" else
+            "The live native prerequisite probe found a required route capability missing; the explicit scientific "
+            f"fallback reason makes {substitute_runtime} eligible as a declared substitute, not as an equivalent "
+            "native route."
             if capability_missing and use_declared_fallback else
-            "The live MATLAB probe found a required route capability missing, and no scientific reason "
+            "The live native prerequisite probe found a required route capability missing, and no scientific reason "
             "authorizes a substitute runtime; no automatic runtime switch was made."
             if capability_missing else
-            "The selected MATLAB live probe failed or returned unusable evidence. The native route is "
-            "inconclusive for this run; the explicit scientific fallback reason makes Python eligible "
+            "The selected native probe failed or returned unusable evidence. The native route is "
+            f"inconclusive for this run; the explicit scientific fallback reason makes {substitute_runtime} eligible "
             "as a declared substitute, not as proof of native equivalence."
             if native_probe_failed and use_declared_fallback else
-            "The selected MATLAB live probe failed or returned unusable evidence. No substitute was "
+            "The selected native probe failed or returned unusable evidence. No substitute was "
             "authorized, so the native route remains inconclusive and requires a route decision."
             if native_probe_failed else
-            "Author .m/.mat-family artifacts identify MATLAB as the native route; an installed "
-            "MATLAB candidate outranks a Python port. Python remains only a declared fallback or cross-check."
+            f"The author-native runtime was explicitly identified as {author_native_runtime}; an installed "
+            "candidate remains primary until the objective or route evidence justifies a declared substitute."
             if native_available
-            else "Author artifacts identify MATLAB as native, but no installation was found. A Python "
+            else f"The author-native runtime was explicitly identified as {author_native_runtime}, but no "
+            "installation was found. A "
             "substitute is eligible only with an explicit scientific reason and equivalence boundary."
         ),
+        **compatibility_fields(substitute_primary_eligible),
     }
 
 
@@ -771,13 +1082,16 @@ def frozen_environment_components(
         add_engine(
             "MATLAB",
             entry.get("release") or entry.get("version"),
-            verificationStatus="verified",
+            verificationStatus="runtime-verified",
             productVersion=entry.get("version"),
+            prerequisitesPresent=bool(entry.get("prerequisitesPresent")),
             routeCapabilityVerified=bool(entry.get("routeCapabilityVerified")),
             invocationPath=entry.get("path"),
         )
         details = entry.get("details")
-        toolboxes = details.get("toolboxes", []) if isinstance(details, dict) else []
+        toolboxes = details.get("requiredToolboxes", []) if isinstance(details, dict) else []
+        if not toolboxes and isinstance(details, dict):
+            toolboxes = details.get("toolboxes", [])
         if isinstance(toolboxes, dict):
             toolboxes = [toolboxes]
         for toolbox in toolboxes if isinstance(toolboxes, list) else []:
@@ -785,7 +1099,12 @@ def frozen_environment_components(
                 continue
             name = toolbox.get("name")
             version = toolbox.get("version")
-            if isinstance(name, str) and name.strip() and isinstance(version, str) and version.strip():
+            installed = toolbox.get("installed", True)
+            if (
+                installed is not False
+                and isinstance(name, str) and name.strip()
+                and isinstance(version, str) and version.strip()
+            ):
                 packages.append({
                     "ecosystem": "MATLAB-toolbox",
                     "name": name.strip(),
@@ -813,7 +1132,7 @@ def main() -> int:
         choices=sorted(RUNTIME_CHOICES | {"all"}),
         help=(
             "Probe only a runtime required by a candidate route; repeat for multiple runtimes. "
-            "Defaults to python. Use all only for an explicitly requested inventory."
+            "No runtime is selected by default. Use all only for an explicitly requested inventory."
         ),
     )
     parser.add_argument(
@@ -839,16 +1158,9 @@ def main() -> int:
         "--matlab-live-probe",
         action="store_true",
         help=(
-            "Request a bounded MATLAB -batch capability probe of the exact selected application/executable. "
-            "Without --allow-matlab-startup-license-risk this records needs-user-decision and does not launch MATLAB."
-        ),
-    )
-    parser.add_argument(
-        "--allow-matlab-startup-license-risk",
-        action="store_true",
-        help=(
-            "Explicitly allow the selected installed MATLAB to start, run startup hooks, and acquire its configured "
-            "local or shared license for the bounded live probe. Never installs or activates MATLAB."
+            "Run a bounded MATLAB -batch startup and prerequisite probe of the exact selected "
+            "application/executable. Invoke only after applying permission-gates.md; this flag is the "
+            "explicit launch action and does not install or activate MATLAB."
         ),
     )
     parser.add_argument(
@@ -863,7 +1175,21 @@ def main() -> int:
         action="append",
         default=[],
         metavar="FUNCTION_NAME",
-        help="Record and test one MATLAB function required by the target route; repeat as needed.",
+        help=(
+            "Record and test one clean-default-path MATLAB or toolbox function required by the target route; "
+            "repeat as needed. Never use this for an author function; identify author code with "
+            "--matlab-entrypoint and verify it only in the later reviewed route smoke."
+        ),
+    )
+    parser.add_argument(
+        "--matlab-required-license-feature",
+        action="append",
+        default=[],
+        metavar="LICENSE_FEATURE",
+        help=(
+            "Test one exact MATLAB license feature identifier required by the target route; repeat as needed. "
+            "This is distinct from checking that a toolbox is installed."
+        ),
     )
     parser.add_argument(
         "--matlab-entrypoint",
@@ -875,14 +1201,45 @@ def main() -> int:
         action="append",
         default=[],
         metavar="PATH",
-        help="Record an author artifact used to infer the native runtime; repeat for .m, .mat, and related files.",
+        help=(
+            "Record a target-relevant author artifact; repeat as needed. Suffixes are retained as candidate "
+            "metadata only and never select the author-native runtime."
+        ),
+    )
+    parser.add_argument(
+        "--author-native-runtime",
+        choices=sorted(ROUTE_RUNTIME_CHOICES),
+        help=(
+            "Explicitly identify the target-relevant author-native runtime after reviewing paper/code evidence. "
+            "Required for route recommendation; an artifact suffix alone, especially .m, is insufficient."
+        ),
+    )
+    parser.add_argument(
+        "--substitute-runtime",
+        choices=sorted(ROUTE_RUNTIME_CHOICES),
+        help="Runtime for a declared fallback, portability route, independent implementation, or cross-check.",
+    )
+    parser.add_argument(
+        "--substitute-reason",
+        help="Scientific or deliverable reason for using the declared substitute runtime.",
+    )
+    parser.add_argument(
+        "--substitute-role",
+        choices=sorted(SUBSTITUTE_ROLES),
+        help=(
+            "Role of the declared substitute. fallback-primary becomes eligible only after native "
+            "unavailability/inconclusiveness; portability-primary and independent-primary are objective-driven; "
+            "cross-check is not primary."
+        ),
     )
     parser.add_argument(
         "--python-fallback-reason",
-        help=(
-            "Scientific reason for retaining Python as an explicit substitute or cross-check when author artifacts "
-            "identify another native runtime."
-        ),
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--python-substitute-role",
+        choices=sorted(SUBSTITUTE_ROLES),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--python-executable",
@@ -910,9 +1267,13 @@ def main() -> int:
     artifacts = author_artifact_records(args.author_artifact, workspace)
     if not 1 <= args.timeout <= MAX_PROBE_TIMEOUT_SECONDS:
         parser.error(f"--timeout must be between 1 and {MAX_PROBE_TIMEOUT_SECONDS} seconds")
-    selected_runtimes = set(args.runtime or ["python"])
+    selected_runtimes = set(args.runtime or [])
     if "all" in selected_runtimes:
         selected_runtimes = set(RUNTIME_CHOICES)
+    if args.author_native_runtime:
+        selected_runtimes.add(args.author_native_runtime)
+    if args.substitute_runtime:
+        selected_runtimes.add(args.substitute_runtime)
     if args.probe_matlab:
         selected_runtimes.add("matlab")
     matlab_specific = any((
@@ -920,12 +1281,11 @@ def main() -> int:
         args.matlab_application,
         args.matlab_live_probe,
         args.matlab_required_toolbox,
+        args.matlab_required_license_feature,
         args.matlab_required_function,
         args.matlab_entrypoint,
     ))
     if matlab_specific:
-        selected_runtimes.add("matlab")
-    if any(item["exists"] and item["suffix"] in {".m", ".mlx", ".p"} for item in artifacts):
         selected_runtimes.add("matlab")
     if args.python_executable:
         selected_runtimes.add("python")
@@ -933,15 +1293,52 @@ def main() -> int:
         parser.error("--allow-workspace-python requires --python-executable")
     if args.matlab_live_probe and not (args.matlab_executable or args.matlab_application):
         parser.error("--matlab-live-probe requires --matlab-executable or --matlab-application")
-    if args.allow_matlab_startup_license_risk and not args.matlab_live_probe:
-        parser.error("--allow-matlab-startup-license-risk requires --matlab-live-probe")
-    if (args.matlab_required_toolbox or args.matlab_required_function or args.matlab_entrypoint) and not (
+    if (args.matlab_required_toolbox or args.matlab_required_license_feature or args.matlab_required_function or args.matlab_entrypoint) and not (
         args.matlab_executable or args.matlab_application
     ):
         parser.error("MATLAB route requirements require --matlab-executable or --matlab-application")
     for function_name in args.matlab_required_function:
         if not MATLAB_FUNCTION.fullmatch(function_name):
             parser.error(f"invalid --matlab-required-function value: {function_name!r}")
+    for feature_name in args.matlab_required_license_feature:
+        if not MATLAB_LICENSE_FEATURE.fullmatch(feature_name):
+            parser.error(f"invalid --matlab-required-license-feature value: {feature_name!r}")
+    legacy_python_arguments_used = bool(
+        args.python_fallback_reason or args.python_substitute_role
+    )
+    generic_substitute_arguments_used = bool(
+        args.substitute_runtime or args.substitute_reason or args.substitute_role
+    )
+    if legacy_python_arguments_used and generic_substitute_arguments_used:
+        parser.error(
+            "deprecated Python substitute flags cannot be combined with --substitute-runtime/role/reason"
+        )
+    if args.python_substitute_role and not args.python_fallback_reason:
+        parser.error("--python-substitute-role requires --python-fallback-reason")
+    if legacy_python_arguments_used:
+        args.substitute_runtime = "python"
+        args.substitute_reason = args.python_fallback_reason
+        args.substitute_role = args.python_substitute_role or "fallback-primary"
+        selected_runtimes.add("python")
+    elif generic_substitute_arguments_used and not all((
+        args.substitute_runtime,
+        args.substitute_reason,
+        args.substitute_role,
+    )):
+        parser.error(
+            "--substitute-runtime, --substitute-role, and --substitute-reason must be supplied together"
+        )
+    if args.substitute_reason is not None:
+        try:
+            args.substitute_reason = validated_substitute_reason(args.substitute_reason)
+        except ValueError as exc:
+            parser.error(f"--substitute-reason {exc}")
+    if (
+        args.author_native_runtime
+        and args.substitute_runtime
+        and args.author_native_runtime == args.substitute_runtime
+    ):
+        parser.error("--substitute-runtime must differ from --author-native-runtime")
 
     selected_matlab: dict | None = None
     if args.matlab_executable or args.matlab_application:
@@ -949,6 +1346,7 @@ def main() -> int:
             selected_matlab = selected_matlab_executable(
                 args.matlab_application or args.matlab_executable,
                 application=bool(args.matlab_application),
+                workspace=workspace,
             )
         except ValueError as exc:
             parser.error(str(exc))
@@ -974,7 +1372,9 @@ def main() -> int:
     if selected_matlab:
         matlab_private_paths.extend(
             selected_matlab[key]
-            for key in ("selectedPath", "invocationPath", "resolvedPath")
+            for key in (
+                "selectedPath", "invocationPath", "resolvedPath", "installationRoot", "identitySource",
+            )
         )
 
     explicitly_selected_python: list[dict] = []
@@ -1003,6 +1403,7 @@ def main() -> int:
         invocation = candidate["invocationPath"]
         resolved = candidate["resolvedPath"]
         entry = {
+            "runtimeId": "python",
             "path": display_invocation_path(invocation, workspace),
             "invocationPath": display_invocation_path(invocation, workspace),
             "resolvedPath": display_path(resolved, workspace),
@@ -1031,6 +1432,7 @@ def main() -> int:
         entry = py_entries_by_path.get(invocation)
         if entry is None:
             entry = {
+                "runtimeId": "python",
                 "path": display_invocation_path(invocation, workspace),
                 "invocationPath": display_invocation_path(invocation, workspace),
                 "resolvedPath": display_path(resolved, workspace),
@@ -1133,6 +1535,7 @@ def main() -> int:
     for candidate in matlab_paths:
         is_selected = bool(selected_matlab and same_file(selected_matlab["invocationPath"], candidate))
         entry = {
+            "runtimeId": "matlab",
             "path": display_invocation_path(candidate, workspace),
             "resolvedPath": display_path(candidate.resolve(), workspace),
             "installationDetected": True,
@@ -1154,13 +1557,17 @@ def main() -> int:
             "liveProbe": None,
             "routeRequirements": {
                 "requiredToolboxes": list(args.matlab_required_toolbox) if is_selected else [],
+                "requiredLicenseFeatures": (
+                    list(args.matlab_required_license_feature) if is_selected else []
+                ),
                 "requiredFunctions": list(args.matlab_required_function) if is_selected else [],
                 "entrypoint": (
                     display_invocation_path(matlab_entrypoint, workspace)
                     if is_selected and matlab_entrypoint else None
                 ),
                 "entrypointPresentStatic": (
-                    matlab_entrypoint.is_file() if is_selected and matlab_entrypoint else None
+                    is_regular_non_symlink_file(matlab_entrypoint)
+                    if is_selected and matlab_entrypoint else None
                 ),
                 "searchDirectories": (
                     [display_invocation_path(path, workspace) for path in matlab_search_directories]
@@ -1183,36 +1590,31 @@ def main() -> int:
         else:
             entry["probeSkipped"] = "Static MATLAB metadata probe was not requested; installation path only."
 
-        if is_selected and args.matlab_live_probe and not args.allow_matlab_startup_license_risk:
-            entry["verificationStatus"] = "needs-user-decision"
-            entry["verificationScope"] = "live-probe-requested-not-authorized"
-            entry["decision"] = {
-                "status": "needs-user-decision",
-                "effect": "start-installed-matlab-and-use-configured-license",
-                "reason": (
-                    "MATLAB startup may execute startup.m and may acquire a local or shared license. "
-                    "No process was started because that effect was not explicitly accepted."
-                ),
-                "optInFlag": "--allow-matlab-startup-license-risk",
-            }
-        elif is_selected and args.matlab_live_probe:
+        if is_selected and args.matlab_live_probe:
             expression = matlab_live_probe_expression(
                 list(args.matlab_required_toolbox),
+                list(args.matlab_required_license_feature),
                 list(args.matlab_required_function),
                 matlab_entrypoint,
                 matlab_search_directories,
             )
-            probe, raw_stdout = run(
-                [str(candidate), "-batch", expression],
-                args.timeout,
-                workspace,
-                return_raw=True,
-                environment=matlab_probe_environment(),
-                redact_paths=matlab_private_paths,
-            )
+            with tempfile.TemporaryDirectory(prefix="scirepro-matlab-probe-") as probe_directory:
+                probe_cwd = Path(probe_directory)
+                probe, raw_stdout = run(
+                    [str(candidate), "-batch", expression],
+                    args.timeout,
+                    workspace,
+                    return_raw=True,
+                    environment=matlab_probe_environment(),
+                    redact_paths=[*matlab_private_paths, probe_cwd],
+                    working_directory=probe_cwd,
+                )
             entry["liveProbe"] = probe
-            entry["verificationScope"] = "runtime-release-toolboxes-functions-entrypoint"
-            entry["startupLicenseRiskAccepted"] = True
+            entry["workingDirectoryPolicy"] = "controlled-empty-temporary-directory"
+            entry["verificationScope"] = (
+                "runtime-startup-base-license-and-route-prerequisites-no-route-smoke"
+            )
+            entry["launchAuthorizedByPolicy"] = True
             if probe["returncode"] != 0 or probe["timedOut"]:
                 entry["verificationStatus"] = "failed"
                 entry["failureReason"] = (
@@ -1224,43 +1626,101 @@ def main() -> int:
                     release = normalize_matlab_release(details.get("release"))
                     if release is None:
                         raise ValueError("MATLAB release missing or invalid")
-                    toolboxes = details.get("toolboxes", [])
-                    if isinstance(toolboxes, dict):
-                        toolboxes = [toolboxes]
-                    if not isinstance(toolboxes, list) or not all(isinstance(item, dict) for item in toolboxes):
-                        raise ValueError("MATLAB toolbox inventory missing or invalid")
-                    installed_toolboxes = {
-                        str(item.get("name", "")).casefold() for item in toolboxes if item.get("name")
+                    toolbox_payload = details.get("requiredToolboxes", [])
+                    if isinstance(toolbox_payload, dict):
+                        toolbox_payload = [toolbox_payload]
+                    if not isinstance(toolbox_payload, list):
+                        raise ValueError("MATLAB required toolbox results missing or invalid")
+                    reported_toolboxes = {
+                        str(item.get("name")).casefold(): {
+                            "installed": bool(item.get("installed")),
+                            "version": str(item.get("version") or ""),
+                        }
+                        for item in toolbox_payload
+                        if isinstance(item, dict) and item.get("name")
                     }
+                    # Accept the older compact test/fixture shape without asking the live probe
+                    # to emit a machine-wide toolbox inventory. Production probes return only
+                    # route-required toolbox checks so their bounded output cannot be truncated.
+                    if args.matlab_required_toolbox and not reported_toolboxes:
+                        legacy_toolboxes = details.get("toolboxes", [])
+                        if isinstance(legacy_toolboxes, dict):
+                            legacy_toolboxes = [legacy_toolboxes]
+                        if not isinstance(legacy_toolboxes, list):
+                            raise ValueError("MATLAB toolbox results missing or invalid")
+                        installed_toolboxes = {
+                            str(item.get("name", "")).casefold(): str(item.get("version") or "")
+                            for item in legacy_toolboxes
+                            if isinstance(item, dict) and item.get("name")
+                        }
+                        reported_toolboxes = {
+                            name.casefold(): {
+                                "installed": name.casefold() in installed_toolboxes,
+                                "version": installed_toolboxes.get(name.casefold(), ""),
+                            }
+                            for name in args.matlab_required_toolbox
+                        }
                     toolbox_checks = [
-                        {"name": name, "installed": name.casefold() in installed_toolboxes}
+                        {
+                            "name": name,
+                            "installed": reported_toolboxes.get(
+                                name.casefold(), {"installed": False},
+                            )["installed"],
+                            "version": reported_toolboxes.get(
+                                name.casefold(), {"version": ""},
+                            )["version"],
+                        }
                         for name in args.matlab_required_toolbox
+                    ]
+                    license_payload = details.get("requiredLicenseFeatures", [])
+                    if isinstance(license_payload, dict):
+                        license_payload = [license_payload]
+                    if not isinstance(license_payload, list):
+                        raise ValueError("MATLAB license feature results missing or invalid")
+                    reported_licenses = {
+                        str(item.get("feature")): bool(item.get("available"))
+                        for item in license_payload
+                        if isinstance(item, dict) and item.get("feature")
+                    }
+                    license_checks = [
+                        {"feature": name, "available": reported_licenses.get(name, False)}
+                        for name in args.matlab_required_license_feature
                     ]
                     function_payload = details.get("requiredFunctions", [])
                     if isinstance(function_payload, dict):
                         function_payload = [function_payload]
                     if not isinstance(function_payload, list):
                         raise ValueError("MATLAB function results missing or invalid")
-                    reported_functions = {
-                        str(item.get("name")): bool(item.get("exists"))
-                        for item in function_payload if isinstance(item, dict) and item.get("name")
-                    }
+                    reported_functions = {}
+                    for item in function_payload:
+                        if not isinstance(item, dict) or not item.get("name"):
+                            continue
+                        exist_code = item.get("existCode")
+                        if not isinstance(exist_code, int):
+                            raise ValueError("MATLAB function result is missing an integer existCode")
+                        reported_functions[str(item["name"])] = exist_code
                     function_checks = [
-                        {"name": name, "exists": reported_functions.get(name, False)}
+                        {
+                            "name": name,
+                            "existCode": reported_functions.get(name, 0),
+                            "exists": reported_functions.get(name, 0) in {2, 3, 6},
+                        }
                         for name in args.matlab_required_function
                     ]
-                    entrypoint_payload = details.get("entrypoint", {})
-                    if not isinstance(entrypoint_payload, dict):
-                        raise ValueError("MATLAB entrypoint result missing or invalid")
                     entrypoint_exists = (
-                        bool(entrypoint_payload.get("exists")) if matlab_entrypoint else True
+                        is_regular_non_symlink_file(matlab_entrypoint)
+                        if matlab_entrypoint else True
                     )
-                    if entrypoint_payload.get("path"):
-                        entrypoint_payload["path"] = display_invocation_path(
-                            entrypoint_payload["path"], workspace
-                        )
-                    details["entrypoint"] = entrypoint_payload
+                    details["entrypoint"] = {
+                        "path": (
+                            display_invocation_path(matlab_entrypoint, workspace)
+                            if matlab_entrypoint else ""
+                        ),
+                        "exists": entrypoint_exists,
+                        "verification": "python-static-regular-non-symlink-file",
+                    }
                     details["requiredToolboxes"] = toolbox_checks
+                    details["requiredLicenseFeatures"] = license_checks
                     details["requiredFunctions"] = function_checks
                     entry["details"] = details
                     entry["release"] = release
@@ -1271,19 +1731,27 @@ def main() -> int:
                     entry["requiredToolboxInstallationsVerified"] = all(
                         item["installed"] for item in toolbox_checks
                     )
+                    entry["requiredLicenseFeaturesVerified"] = all(
+                        item["available"] for item in license_checks
+                    )
                     entry["requiredFunctionsVerified"] = all(
                         item["exists"] for item in function_checks
                     )
                     entry["entrypointVerified"] = entrypoint_exists
-                    route_capability = all((
+                    prerequisites_present = all((
                         entry["requiredToolboxInstallationsVerified"],
+                        entry["requiredLicenseFeaturesVerified"],
                         entry["requiredFunctionsVerified"],
                         entry["entrypointVerified"],
                     ))
-                    entry["routeCapabilityVerified"] = route_capability
-                    entry["verified"] = route_capability
-                    entry["verificationStatus"] = "verified" if route_capability else "failed"
-                    if not route_capability:
+                    entry["prerequisitesPresent"] = prerequisites_present
+                    entry["routeCapabilityVerified"] = False
+                    entry["routeSmokeTested"] = False
+                    entry["verified"] = False
+                    entry["verificationStatus"] = (
+                        "prerequisites-present" if prerequisites_present else "failed"
+                    )
+                    if not prerequisites_present:
                         entry["failureReason"] = "route-required-capability-missing"
                 except (json.JSONDecodeError, OSError, TypeError, ValueError):
                     entry["verificationStatus"] = "failed"
@@ -1307,6 +1775,7 @@ def main() -> int:
             continue
         path = Path(executable).resolve()
         entry = {
+            "runtimeId": runtime_id,
             "label": label,
             "path": display_path(path, workspace),
             "verificationStatus": "available",
@@ -1321,9 +1790,7 @@ def main() -> int:
 
     disk = shutil.disk_usage(workspace)
     workspace_python_probed = any(selection["workspaceControlled"] for selection in explicitly_selected_python)
-    matlab_live_probed = bool(
-        selected_matlab and args.matlab_live_probe and args.allow_matlab_startup_license_risk
-    )
+    matlab_live_probed = bool(selected_matlab and args.matlab_live_probe)
     matlab_workspace_executed = bool(
         matlab_live_probed and is_lexically_within(selected_matlab["invocationPath"], workspace)
     )
@@ -1332,10 +1799,25 @@ def main() -> int:
         workspace_execution_scopes.append("explicit-pep405-python-binary-no-site-only")
     if matlab_workspace_executed:
         workspace_execution_scopes.append("explicit-matlab-live-probe")
+    runtime_entries: dict[str, list[dict]] = {
+        "python": py_entries,
+        "matlab": matlab_entries,
+    }
+    for entry in other:
+        runtime_id = entry.get("runtimeId")
+        if isinstance(runtime_id, str):
+            runtime_entries.setdefault(runtime_id, []).append(entry)
     route_recommendation = native_route_recommendation(
         artifacts,
-        matlab_entries,
-        args.python_fallback_reason,
+        runtime_entries,
+        args.substitute_reason,
+        args.substitute_role,
+        author_native_runtime=args.author_native_runtime,
+        substitute_runtime=args.substitute_runtime,
+        author_runtime_selection_source=(
+            "--author-native-runtime" if args.author_native_runtime else None
+        ),
+        legacy_python_arguments_used=legacy_python_arguments_used,
     )
     hardware = {
         "platform": platform.platform(),
@@ -1354,10 +1836,12 @@ def main() -> int:
         "Explicit Python probes use the selected launcher, a minimal allowlisted environment, -I -S isolation, and a bounded timeout; sitecustomize and site-packages are never loaded.",
         "Workspace Python execution additionally requires --allow-workspace-python; PEP 405 identity is detected statically and the no-site binary probe does not verify the venv runtime or packages.",
         "--probe-matlab reads static metadata only and never launches MATLAB.",
-        "A MATLAB live probe requires an exact --matlab-application/--matlab-executable, --matlab-live-probe, and the separate --allow-matlab-startup-license-risk acknowledgement.",
-        "A successful MATLAB capability probe verifies startup, release, installed toolboxes, named functions, and entrypoint presence; it does not execute the entrypoint or constitute a route smoke test.",
-        "The MATLAB capability probe temporarily adds only explicit route directories and restores the original MATLAB path; it never executes author entrypoints or recursively scans source trees.",
-        "When author .m/.mat-family artifacts and an installed MATLAB coexist, the author-native MATLAB route outranks Python until a live probe falsifies a required capability or leaves the selected runtime inconclusive; Python becomes a declared substitute only with an explicit target-relevant fallback reason.",
+        "A MATLAB live probe requires a non-workspace launcher with a recognized installation shape, trusted static product identity, an exact --matlab-application/--matlab-executable, and --matlab-live-probe. The caller must apply permission-gates.md before invoking it; no second approval flag is required.",
+        "A successful MATLAB prerequisite probe verifies startup/base runtime, installed toolboxes, supplied license feature identifiers, clean-path system functions, and a Python-static regular entrypoint. It does not execute the entrypoint or constitute a route smoke test.",
+        "The MATLAB prerequisite probe starts in a controlled empty temporary working directory, resets to the default MATLAB path before queries, never adds or executes author directories, and restores the original path before exit.",
+        "MATLAB may execute the user's configured startup hooks before the batch expression begins; the probe cannot suppress or characterize those trusted user-level hooks.",
+        "Artifact suffixes are candidate metadata, not author-runtime identity. In particular, .m is shared by MATLAB and GNU Octave; route recommendation requires an explicit --author-native-runtime selection supported by target-relevant evidence.",
+        "An available-but-untested author-native stage must be resolved before a fallback-primary substitute. Objective-driven portability or independent implementations may use any declared --substitute-runtime with an explicit role and reason.",
         "R, Julia, Octave, Node, and accelerator discovery is static-only; validate a chosen route with an explicitly reviewed executable and a route-specific smoke command.",
         "Verify required packages, toolboxes, licenses, and hardware separately for each selected route.",
     ]

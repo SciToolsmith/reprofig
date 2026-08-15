@@ -264,7 +264,7 @@ class RepositoryContractTests(unittest.TestCase):
 
         self.assertRegex(
             skill_text,
-            r"(?is)(?:target images? alone|pixels without reliable paper context).{0,900}?(?:assess|determine|classify).{0,160}?(?:identifi|recoverab)",
+            r"(?is)(?:target images? alone|pixels? alone|pixels without reliable paper context).{0,1200}?(?:assess|determine|classify).{0,160}?(?:identifi|recoverab)",
         )
         self.assertRegex(
             skill_text,
