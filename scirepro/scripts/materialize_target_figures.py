@@ -4,18 +4,28 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import statistics
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple
+
+try:
+    from .safe_output import SafeOutputError, checked_directory_create_only
+except ImportError:  # Direct script execution.
+    from safe_output import SafeOutputError, checked_directory_create_only
 
 try:  # Keep --help and manifest-only verification usable before environment setup.
     import pdfplumber
@@ -189,6 +199,7 @@ def resolve_pdftoppm(
 def image_preflight(source: Path) -> Tuple[int, int, int]:
     """Read dimensions before copying and estimate preserved plus normalized bytes."""
     require_pillow()
+    require(source.stat().st_size <= MAX_IMAGE_BYTES, f"image exceeds {MAX_IMAGE_BYTES} bytes: {source.name}")
     try:
         with Image.open(source) as opened:
             width, height = ImageOps.exif_transpose(opened).size
@@ -198,9 +209,9 @@ def image_preflight(source: Path) -> Tuple[int, int, int]:
             )
     except (OSError, Image.DecompressionBombError) as exc:
         raise TargetError(f"unsupported or malformed image {source.name}: {exc}") from exc
-    # A metadata-minimized RGB PNG is bounded conservatively by four bytes per
-    # pixel plus fixed container/encoder headroom. This is a planning estimate,
-    # not a runtime quota claim.
+    # A metadata-minimized display PNG (including RGBA or 16-bit grayscale) is
+    # bounded conservatively by four bytes per pixel plus fixed container/
+    # encoder headroom. This is a planning estimate, not a runtime quota claim.
     normalized_estimate = width * height * 4 + 1024 * 1024
     return width, height, source.stat().st_size + normalized_estimate
 
@@ -213,16 +224,182 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def file_signature(details: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    """Return fields that change when a regular input is replaced or edited."""
+    return (
+        details.st_dev,
+        details.st_ino,
+        details.st_mode,
+        details.st_size,
+        details.st_mtime_ns,
+        details.st_ctime_ns,
+    )
+
+
+def inspect_regular_source(source: Path, purpose: str, maximum_bytes: int) -> tuple[Path, tuple[int, int, int, int, int, int]]:
+    """Open a source without following its leaf and return its stable identity."""
+    source = checked_user_path(source, purpose, must_exist=True)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(source, flags)
+    except OSError as exc:
+        raise TargetError(f"{purpose} could not be opened safely: {source}") from exc
+    try:
+        details = os.fstat(descriptor)
+        require(stat.S_ISREG(details.st_mode), f"{purpose} is not a regular file: {source}")
+        require(details.st_size <= maximum_bytes, f"{purpose} exceeds {maximum_bytes} bytes: {source.name}")
+        return source, file_signature(details)
+    finally:
+        os.close(descriptor)
+
+
+def sha256_descriptor(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            return digest.hexdigest()
+        digest.update(chunk)
+
+
+def snapshot_regular_file(
+    source: Path,
+    destination: Path,
+    purpose: str,
+    maximum_bytes: int,
+    *,
+    expected_signature: Optional[tuple[int, int, int, int, int, int]] = None,
+) -> int:
+    """Create a read-only snapshot and reject mutation during acquisition."""
+    source = checked_user_path(source, purpose, must_exist=True)
+    source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    destination_flags = (
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        source_descriptor = os.open(source, source_flags)
+    except OSError as exc:
+        raise TargetError(f"{purpose} could not be opened safely: {source}") from exc
+    destination_descriptor: Optional[int] = None
+    created_destination = False
+    published = False
+    try:
+        before = os.fstat(source_descriptor)
+        signature = file_signature(before)
+        require(stat.S_ISREG(before.st_mode), f"{purpose} is not a regular file: {source}")
+        require(before.st_size <= maximum_bytes, f"{purpose} exceeds {maximum_bytes} bytes: {source.name}")
+        if expected_signature is not None:
+            require(signature == expected_signature, f"{purpose} changed before it could be snapshotted: {source.name}")
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        destination_descriptor = os.open(destination, destination_flags, 0o600)
+        created_destination = True
+        copied_digest = hashlib.sha256()
+        copied_bytes = 0
+        while True:
+            chunk = os.read(source_descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            copied_digest.update(chunk)
+            copied_bytes += len(chunk)
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_descriptor, view)
+                require(written > 0, f"{purpose} snapshot write made no progress")
+                view = view[written:]
+        os.fsync(destination_descriptor)
+        require(copied_bytes == before.st_size, f"{purpose} changed size while being snapshotted: {source.name}")
+        require(file_signature(os.fstat(source_descriptor)) == signature, f"{purpose} changed while being snapshotted: {source.name}")
+        source_digest = sha256_descriptor(source_descriptor)
+        require(source_digest == copied_digest.hexdigest(), f"{purpose} changed while being snapshotted: {source.name}")
+        require(file_signature(os.fstat(source_descriptor)) == signature, f"{purpose} changed while being snapshotted: {source.name}")
+        try:
+            path_details = os.lstat(source)
+        except OSError as exc:
+            raise TargetError(f"{purpose} changed while being snapshotted: {source.name}") from exc
+        require(file_signature(path_details) == signature, f"{purpose} changed while being snapshotted: {source.name}")
+        os.fchmod(destination_descriptor, 0o400)
+        published = True
+        return copied_bytes
+    except FileExistsError as exc:
+        raise TargetError(f"snapshot destination already exists: {destination}") from exc
+    finally:
+        if destination_descriptor is not None:
+            os.close(destination_descriptor)
+        os.close(source_descriptor)
+        if created_destination and not published and os.path.lexists(destination):
+            destination.unlink()
+
+
+def remove_private_tree(path: Path) -> None:
+    """Make a read-only private snapshot tree removable, then delete it."""
+    if not path.exists():
+        return
+    for root, directories, _ in os.walk(path):
+        os.chmod(root, 0o700)
+        for directory in directories:
+            os.chmod(Path(root) / directory, 0o700)
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def publish_file_create_only(source: Path, destination: Path, purpose: str) -> None:
+    """Publish a staged regular file without replacing any existing leaf."""
+    require(source.is_file() and not source.is_symlink(), f"staged {purpose} is not a regular file")
+    require(destination.parent.is_dir() and not destination.parent.is_symlink(), f"{purpose} parent is unavailable")
+    try:
+        os.link(source, destination, follow_symlinks=False)
+    except FileExistsError as exc:
+        raise TargetError(f"{purpose} path already exists: {destination}") from exc
+    except OSError as exc:
+        raise TargetError(f"{purpose} could not be published atomically: {destination}") from exc
+    try:
+        source.unlink()
+    except OSError as exc:
+        destination.unlink(missing_ok=True)
+        raise TargetError(f"staged {purpose} could not be finalized") from exc
+
+
+@contextmanager
+def exclusive_manifest_lock(workspace: Path):
+    """Hold a non-blocking workspace lock across any manifest mutation."""
+    lock_path = workspace / ".scirepro-replace.lock"
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise TargetError("manifest lock could not be opened safely") from exc
+    try:
+        require(stat.S_ISREG(os.fstat(descriptor).st_mode), "manifest lock is not a regular file")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise TargetError("another manifest update is already in progress") from exc
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
 def write_json(path: Path, value: object) -> None:
     payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
-    ) as handle:
-        temporary = Path(handle.name)
-        handle.write(payload)
-        handle.flush()
-    temporary.replace(path)
+    temporary: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def write_json_create_only(path: Path, value: object) -> None:
@@ -243,6 +420,32 @@ def write_json_create_only(path: Path, value: object) -> None:
         os.link(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def rename_directory_create_only(source: Path, destination: Path) -> None:
+    """Atomically publish a new directory without replacing a racing creator."""
+    library = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if sys.platform == "darwin" and hasattr(library, "renamex_np"):
+        function = library.renamex_np
+        function.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+        function.restype = ctypes.c_int
+        result = function(source_bytes, destination_bytes, 0x00000004)
+    elif sys.platform.startswith("linux") and hasattr(library, "renameat2"):
+        function = library.renameat2
+        function.argtypes = (
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
+        )
+        function.restype = ctypes.c_int
+        result = function(-100, source_bytes, -100, destination_bytes, 0x00000001)
+    else:
+        raise TargetError("atomic create-only directory publication is unavailable on this platform")
+    if result != 0:
+        code = ctypes.get_errno()
+        if code in {errno.EEXIST, errno.ENOTEMPTY}:
+            raise TargetError(f"output directory already exists: {destination}")
+        raise TargetError(f"atomic output publication failed: {os.strerror(code)}")
 
 
 def canonical_manifest(manifest: dict) -> bytes:
@@ -339,7 +542,19 @@ def merge_caption_lines(lines: List[dict]) -> str:
     return merged
 
 
-def _caption_candidates(page: object, figure_number: int) -> List[dict]:
+def extract_page_words(page: object) -> List[dict]:
+    """Extract one page once so multi-target caption lookup stays linear."""
+    return page.extract_words(
+        x_tolerance=1,
+        y_tolerance=2,
+        use_text_flow=False,
+        keep_blank_chars=False,
+    ) or []
+
+
+def _caption_candidates(
+    page: object, figure_number: int, words: Optional[List[dict]] = None
+) -> List[dict]:
     """Return geometric caption candidates without merging two PDF columns.
 
     A full-page `extract_words` line can silently concatenate a left-column
@@ -348,12 +563,7 @@ def _caption_candidates(page: object, figure_number: int) -> List[dict]:
     plausible candidates remain.  Full-width captions are considered only
     when neither half contains the requested marker.
     """
-    words = page.extract_words(
-        x_tolerance=1,
-        y_tolerance=2,
-        use_text_flow=False,
-        keep_blank_chars=False,
-    ) or []
+    words = extract_page_words(page) if words is None else words
     midpoint = float(page.width) / 2
     columns: List[Tuple[str, float, float]] = [
         ("left", 0.0, midpoint),
@@ -437,8 +647,10 @@ def _caption_candidates(page: object, figure_number: int) -> List[dict]:
     return results
 
 
-def caption_for(page: object, figure_number: int) -> Optional[Tuple[str, Tuple[float, float, float, float]]]:
-    candidates = _caption_candidates(page, figure_number)
+def caption_for(
+    page: object, figure_number: int, words: Optional[List[dict]] = None
+) -> Optional[Tuple[str, Tuple[float, float, float, float]]]:
+    candidates = _caption_candidates(page, figure_number, words)
     if not candidates:
         return None
 
@@ -598,6 +810,12 @@ def render_qa_overlay(page_image: Image.Image, crop: tuple[int, int, int, int], 
 
 
 def normalize_uploaded_image(source: Path, destination: Path, dpi: int) -> tuple[int, int]:
+    """Write a metadata-minimized PNG for display and QA, not target identity.
+
+    Preserve native PNG-capable precision and alpha where practical.  The
+    byte-for-byte original remains the authoritative target object, so formats
+    that require a display conversion do not silently redefine the target.
+    """
     require_pillow()
     require(source.is_file() and not source.is_symlink(), f"image does not exist or is symlinked: {source}")
     require(source.stat().st_size <= MAX_IMAGE_BYTES, f"image exceeds {MAX_IMAGE_BYTES} bytes: {source.name}")
@@ -608,8 +826,26 @@ def normalize_uploaded_image(source: Path, destination: Path, dpi: int) -> tuple
                 width > 0 and height > 0 and width * height <= MAX_IMAGE_PIXELS,
                 f"image exceeds the {MAX_IMAGE_PIXELS}-pixel safety limit: {source.name}",
             )
-            image = ImageOps.exif_transpose(opened).convert("RGB")
+            image = ImageOps.exif_transpose(opened)
+            if image.mode == "I;16":
+                # PNG supports unsigned 16-bit grayscale without quantization.
+                image = image.copy()
+            elif image.mode in {"I;16L", "I;16B", "I;16N"}:
+                # Normalize byte order through 32-bit integer pixels first;
+                # direct I;16B -> I;16 conversion truncates in Pillow.
+                image = image.convert("I").convert("I;16")
+            elif image.mode == "I" and 0 <= image.getextrema()[0] <= image.getextrema()[1] <= 65535:
+                image = image.convert("I;16")
+            elif image.mode in {"L", "LA", "RGB", "RGBA"}:
+                image = image.copy()
+            elif image.mode == "P" and "transparency" in image.info:
+                image = image.convert("RGBA")
+            elif image.mode == "1":
+                image = image.convert("L")
+            else:
+                image = image.convert("RGB")
             size = image.size
+            image.info.clear()
             image.save(destination, format="PNG", dpi=(dpi, dpi), optimize=True)
             return size
     except (OSError, Image.DecompressionBombError) as exc:
@@ -646,6 +882,15 @@ def target_record(
     original_relative = original_path.relative_to(output).as_posix()
     with Image.open(normalized_path) as image:
         width, height = image.size
+    with Image.open(original_path) as image:
+        target_media_type = Image.MIME.get(image.format or "")
+    require(
+        isinstance(target_media_type, str) and target_media_type.startswith("image/"),
+        f"could not identify target media type: {original_path.name}",
+    )
+    normalized_sha256 = sha256_file(normalized_path)
+    target_sha256 = sha256_file(original_path)
+    require(source_sha256 == target_sha256, f"preserved target hash changed: {original_path.name}")
     return {
         "targetId": target_id,
         "acquisitionMode": acquisition_mode,
@@ -656,11 +901,16 @@ def target_record(
         "paperPage": page,
         "caption": caption,
         "originalPath": original_relative,
+        "targetPath": original_relative,
         "normalizedPath": relative,
         "sourceFileName": source_file_name,
         "sourceSha256": source_sha256,
-        "normalizedSha256": sha256_file(normalized_path),
-        "targetSha256": sha256_file(normalized_path),
+        "normalizedSha256": normalized_sha256,
+        "targetSha256": target_sha256,
+        "targetMediaType": target_media_type,
+        "normalizedMediaType": "image/png",
+        "normalizedRole": "display-qa-proxy",
+        # Retained as a compatibility alias for the normalized PNG.
         "mediaType": "image/png",
         "width": width,
         "height": height,
@@ -669,7 +919,10 @@ def target_record(
         "captionIncluded": caption_included,
         "qaStatus": qa_status,
         "localAnalysisOnly": True,
-        "notes": notes,
+        "notes": [
+            *notes,
+            "The normalized PNG is a display/QA proxy; targetPath is the authoritative preserved object.",
+        ],
     }
 
 
@@ -790,6 +1043,7 @@ def validate_manifest(manifest: object, *, root: Optional[Path] = None, require_
             require(target.get("qaStatus") == "verified", f"{target_id}: target crop has not been visually verified")
         relative = target.get("normalizedPath")
         original_relative = target.get("originalPath")
+        target_relative = target.get("targetPath")
         require(safe_relative(relative), f"{target_id}: unsafe normalizedPath")
         require(safe_relative(original_relative), f"{target_id}: unsafe originalPath")
         require(relative not in used_paths, f"{target_id}: duplicate normalizedPath: {relative}")
@@ -812,15 +1066,69 @@ def validate_manifest(manifest: object, *, root: Optional[Path] = None, require_
                     isinstance(replacement.get(key), str) and re.fullmatch(r"[0-9a-f]{64}", replacement[key]),
                     f"{target_id}: invalid replacement {key}",
                 )
+            replacement_target_path = replacement.get("targetPath")
+            if replacement_target_path is not None:
+                require(
+                    replacement_target_path == replacement.get("originalPath"),
+                    f"{target_id}: replacement targetPath must bind the preserved original",
+                )
+                require(
+                    isinstance(replacement.get("targetMediaType"), str)
+                    and replacement["targetMediaType"].startswith("image/"),
+                    f"{target_id}: invalid replacement targetMediaType",
+                )
+                require(
+                    replacement.get("targetSha256") == replacement.get("sourceSha256"),
+                    f"{target_id}: replacement target hash must bind the preserved original",
+                )
+                require(
+                    replacement.get("normalizedMediaType") == "image/png"
+                    and replacement.get("normalizedRole") == "display-qa-proxy",
+                    f"{target_id}: replacement normalized image must be labeled as a display/QA proxy",
+                )
         require(isinstance(target.get("normalizedSha256"), str) and re.fullmatch(r"[0-9a-f]{64}", target["normalizedSha256"]), f"{target_id}: invalid normalized SHA-256")
-        require(target.get("targetSha256") == target.get("normalizedSha256"), f"{target_id}: target hash must bind the normalized target object")
         require(isinstance(target.get("sourceSha256"), str) and re.fullmatch(r"[0-9a-f]{64}", target["sourceSha256"]), f"{target_id}: invalid source SHA-256")
+        if target_relative is None:
+            # Compatibility with manifests written before preserved originals
+            # became the authoritative target object.
+            require(
+                target.get("targetSha256") == target.get("normalizedSha256"),
+                f"{target_id}: legacy target hash must bind the normalized target object",
+            )
+        else:
+            require(target_relative == original_relative, f"{target_id}: targetPath must bind the preserved original")
+            require(
+                isinstance(target.get("targetMediaType"), str) and target["targetMediaType"].startswith("image/"),
+                f"{target_id}: invalid targetMediaType",
+            )
+            require(
+                target.get("targetSha256") == target.get("sourceSha256"),
+                f"{target_id}: target hash must bind the preserved original",
+            )
+            require(
+                target.get("normalizedMediaType") == "image/png"
+                and target.get("normalizedRole") == "display-qa-proxy",
+                f"{target_id}: normalized image must be labeled as a display/QA proxy",
+            )
         if root is not None:
             require_pillow()
             path = checked_manifest_child(root, relative, f"{target_id} normalized target")
             original_path = checked_manifest_child(root, original_relative, f"{target_id} original target")
             require(sha256_file(path) == target["normalizedSha256"], f"{target_id}: normalized target hash mismatch")
             require(sha256_file(original_path) == target["sourceSha256"], f"{target_id}: original target hash mismatch")
+            if target_relative is not None:
+                target_path = checked_manifest_child(root, target_relative, f"{target_id} authoritative target")
+                require(sha256_file(target_path) == target["targetSha256"], f"{target_id}: target hash mismatch")
+                try:
+                    with Image.open(target_path) as authoritative_image:
+                        actual_media_type = Image.MIME.get(authoritative_image.format or "")
+                        require(
+                            actual_media_type == target["targetMediaType"],
+                            f"{target_id}: target media type does not match the preserved object",
+                        )
+                        authoritative_image.verify()
+                except (OSError, Image.DecompressionBombError) as exc:
+                    raise TargetError(f"{target_id}: authoritative target failed to decode: {exc}") from exc
             try:
                 with Image.open(path) as normalized_image:
                     require(normalized_image.format == "PNG", f"{target_id}: normalized target is not a PNG")
@@ -838,6 +1146,12 @@ def validate_manifest(manifest: object, *, root: Optional[Path] = None, require_
 
 def mark_verified(manifest_path: Path, target_ids: list[str], caption_included: bool) -> int:
     manifest_path = checked_user_path(manifest_path, "target manifest", must_exist=True)
+    with exclusive_manifest_lock(manifest_path.parent):
+        return mark_verified_locked(manifest_path, target_ids, caption_included)
+
+
+def mark_verified_locked(manifest_path: Path, target_ids: list[str], caption_included: bool) -> int:
+    """Update visual verification while the manifest lock is held."""
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     targets = validate_manifest(manifest, root=manifest_path.parent)
     require(target_ids, "verification requires --verify-targets; use --verify-all only after reviewing every target")
@@ -954,6 +1268,26 @@ def bind_uploaded_identity(
     """Bind an uploaded candidate to indexed paper metadata, pending visual QA."""
     require_pdfplumber()
     manifest_path = checked_user_path(manifest_path, "target manifest", must_exist=True)
+    with exclusive_manifest_lock(manifest_path.parent):
+        return bind_uploaded_identity_locked(
+            manifest_path,
+            target_id,
+            figure_number,
+            paper_page,
+            figure_label,
+            manual_caption,
+        )
+
+
+def bind_uploaded_identity_locked(
+    manifest_path: Path,
+    target_id: str,
+    figure_number: Optional[int],
+    paper_page: Optional[int],
+    figure_label: Optional[str],
+    manual_caption: Optional[str],
+) -> int:
+    """Bind identity while the manifest lock is held."""
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     targets = validate_manifest(manifest, root=manifest_path.parent)
     require(target_id in targets, f"unknown target ID: {target_id}")
@@ -1051,14 +1385,35 @@ def replace_target(manifest_path: Path, target_id: str, replacement: Path, dpi: 
     """Transactionally replace a bad crop while retaining full provenance."""
     require_pillow()
     manifest_path = checked_user_path(manifest_path, "target manifest", must_exist=True)
-    replacement = checked_user_path(replacement, "replacement image", must_exist=True)
-    require(replacement.is_file(), "replacement image is not a regular file")
+    replacement, replacement_signature = inspect_regular_source(
+        replacement, "replacement image", MAX_IMAGE_BYTES
+    )
+    workspace = manifest_path.parent
+    with exclusive_manifest_lock(workspace):
+        refreshed_manifest_path = checked_user_path(manifest_path, "target manifest", must_exist=True)
+        require(refreshed_manifest_path == manifest_path, "target manifest changed before replacement")
+        return replace_target_locked(
+            manifest_path,
+            target_id,
+            replacement,
+            replacement_signature,
+            dpi,
+        )
+
+
+def replace_target_locked(
+    manifest_path: Path,
+    target_id: str,
+    replacement: Path,
+    replacement_signature: tuple[int, int, int, int, int, int],
+    dpi: int,
+) -> int:
+    """Replace a target while the workspace replacement lock is held."""
     workspace = manifest_path.parent
     original_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     current_targets = validate_manifest(original_manifest, root=workspace)
     require(target_id in current_targets, f"unknown target ID: {target_id}")
-    current_target = current_targets[target_id]
-    history = current_target.get("provenanceHistory", [])
+    history = current_targets[target_id].get("provenanceHistory", [])
     require(isinstance(history, list), f"{target_id}: provenanceHistory must be an array")
     version = len(history) + 1
 
@@ -1068,14 +1423,19 @@ def replace_target(manifest_path: Path, target_id: str, replacement: Path, dpi: 
     require(figures.is_dir() and not figures.is_symlink(), "figures directory is missing or symlinked")
     require(qa.is_dir() and not qa.is_symlink(), "QA directory is missing or symlinked")
     require(not originals.is_symlink(), "replacement originals directory may not be symlinked")
+    if os.path.lexists(originals):
+        require(originals.is_dir(), "replacement originals path is not a directory")
+
     final_original = originals / f"{target_id}-replacement-v{version:03d}{replacement.suffix.lower() or '.bin'}"
     final_normalized = figures / f"{target_id}-replacement-v{version:03d}.png"
     overlay = qa / f"{target_id}-crop-overlay.png"
-    require(not overlay.is_symlink(), f"{target_id}: QA overlay may not be symlinked")
     final_overlay_archive = qa / f"{target_id}-crop-overlay-v{version:03d}-superseded.png"
-    require(not final_original.exists(), f"{target_id}: replacement provenance path already exists")
-    require(not final_normalized.exists(), f"{target_id}: replacement output path already exists")
-    require(not final_overlay_archive.exists(), f"{target_id}: QA overlay history path already exists")
+    require(not os.path.lexists(final_original), f"{target_id}: replacement provenance path already exists")
+    require(not os.path.lexists(final_normalized), f"{target_id}: replacement output path already exists")
+    require(not os.path.lexists(final_overlay_archive), f"{target_id}: QA overlay history path already exists")
+    overlay_present = os.path.lexists(overlay)
+    if overlay_present:
+        require(overlay.is_file() and not overlay.is_symlink(), f"{target_id}: QA overlay is not a regular file")
 
     staging = Path(tempfile.mkdtemp(prefix=f".{target_id}-replacement-", dir=workspace))
     created: List[Path] = []
@@ -1087,12 +1447,27 @@ def replace_target(manifest_path: Path, target_id: str, replacement: Path, dpi: 
         staged_normalized = staging / "normalized" / final_normalized.name
         staged_original.parent.mkdir()
         staged_normalized.parent.mkdir()
-        shutil.copy2(replacement, staged_original)
-        normalize_uploaded_image(replacement, staged_normalized, dpi)
+        snapshot_regular_file(
+            replacement,
+            staged_original,
+            "replacement image",
+            MAX_IMAGE_BYTES,
+            expected_signature=replacement_signature,
+        )
+        image_preflight(staged_original)
+        normalize_uploaded_image(staged_original, staged_normalized, dpi)
         with Image.open(staged_normalized) as image:
             width, height = image.size
+        with Image.open(staged_original) as image:
+            target_media_type = Image.MIME.get(image.format or "")
+        require(
+            isinstance(target_media_type, str) and target_media_type.startswith("image/"),
+            f"could not identify replacement media type: {replacement.name}",
+        )
         source_sha = sha256_file(staged_original)
         normalized_sha = sha256_file(staged_normalized)
+        target_relative = final_original.relative_to(workspace).as_posix()
+        normalized_relative = final_normalized.relative_to(workspace).as_posix()
 
         next_manifest = json.loads(json.dumps(original_manifest))
         target = next(item for item in next_manifest["targets"] if item["targetId"] == target_id)
@@ -1103,9 +1478,9 @@ def replace_target(manifest_path: Path, target_id: str, replacement: Path, dpi: 
         }
         archived_overlay_relative = None
         staged_overlay = None
-        if overlay.is_file():
+        if overlay_present:
             staged_overlay = staging / final_overlay_archive.name
-            shutil.copy2(overlay, staged_overlay)
+            snapshot_regular_file(overlay, staged_overlay, "QA overlay", MAX_IMAGE_BYTES)
             archived_overlay_relative = final_overlay_archive.relative_to(workspace).as_posix()
         target.setdefault("provenanceHistory", []).append({
             "version": version,
@@ -1115,18 +1490,28 @@ def replace_target(manifest_path: Path, target_id: str, replacement: Path, dpi: 
             "replacement": {
                 "sourceFileName": replacement.name,
                 "sourceSha256": source_sha,
-                "originalPath": final_original.relative_to(workspace).as_posix(),
-                "normalizedPath": final_normalized.relative_to(workspace).as_posix(),
+                "originalPath": target_relative,
+                "targetPath": target_relative,
+                "targetSha256": source_sha,
+                "targetMediaType": target_media_type,
+                "normalizedPath": normalized_relative,
                 "normalizedSha256": normalized_sha,
+                "normalizedMediaType": "image/png",
+                "normalizedRole": "display-qa-proxy",
             },
         })
         target.update({
             "sourceFileName": replacement.name,
             "sourceSha256": source_sha,
-            "originalPath": final_original.relative_to(workspace).as_posix(),
-            "normalizedPath": final_normalized.relative_to(workspace).as_posix(),
+            "originalPath": target_relative,
+            "targetPath": target_relative,
+            "targetMediaType": target_media_type,
+            "normalizedPath": normalized_relative,
             "normalizedSha256": normalized_sha,
-            "targetSha256": normalized_sha,
+            "targetSha256": source_sha,
+            "normalizedMediaType": "image/png",
+            "normalizedRole": "display-qa-proxy",
+            "mediaType": "image/png",
             "width": width,
             "height": height,
             "dpi": dpi,
@@ -1141,31 +1526,36 @@ def replace_target(manifest_path: Path, target_id: str, replacement: Path, dpi: 
             if isinstance(target.get("identityBinding"), dict):
                 target["identityBinding"]["status"] = "superseded-by-replacement"
         target.setdefault("notes", []).append(
-            f"Target pixels replaced as provenance version {version}; PDF crop, identity, caption inclusion, and QA verification were reset."
+            f"Target pixels replaced as provenance version {version}; the preserved replacement is authoritative, "
+            "the normalized PNG is a display/QA proxy, and PDF crop, identity, caption inclusion, and QA verification were reset."
         )
         refresh_manifest_integrity(next_manifest)
         validate_manifest(next_manifest, root=None)
 
-        if not originals.exists():
+        if not os.path.lexists(originals):
             originals.mkdir()
             created_originals_dir = True
-        staged_original.replace(final_original)
+        publish_file_create_only(staged_original, final_original, f"{target_id} replacement provenance")
         created.append(final_original)
-        staged_normalized.replace(final_normalized)
+        publish_file_create_only(staged_normalized, final_normalized, f"{target_id} normalized replacement")
         created.append(final_normalized)
         if staged_overlay is not None:
-            staged_overlay.replace(final_overlay_archive)
+            publish_file_create_only(staged_overlay, final_overlay_archive, f"{target_id} QA overlay archive")
             created.append(final_overlay_archive)
         validate_manifest(next_manifest, root=workspace)
-        write_json(manifest_path, next_manifest)
-        manifest_committed = True
-        if overlay.is_file():
+        if overlay_present:
+            require(
+                sha256_file(overlay) == sha256_file(final_overlay_archive),
+                f"{target_id}: QA overlay changed during replacement",
+            )
             overlay.unlink()
             overlay_removed = True
+        write_json(manifest_path, next_manifest)
+        manifest_committed = True
     except Exception:
         if manifest_committed:
             write_json(manifest_path, original_manifest)
-        if overlay_removed and final_overlay_archive.is_file():
+        if overlay_removed and final_overlay_archive.is_file() and not os.path.lexists(overlay):
             shutil.copy2(final_overlay_archive, overlay)
         for path in reversed(created):
             if path.is_file() and not path.is_symlink():
@@ -1180,7 +1570,65 @@ def replace_target(manifest_path: Path, target_id: str, replacement: Path, dpi: 
     return 0
 
 
-def preflight_acquisition(args: argparse.Namespace, output: Path) -> dict:
+def acquisition_budget(args: argparse.Namespace) -> int:
+    budget = DEFAULT_ACQUISITION_BUDGET_BYTES if args.max_output_bytes is None else args.max_output_bytes
+    require(
+        1 <= budget <= MAX_ACQUISITION_BUDGET_BYTES,
+        f"--max-output-bytes must be a positive integer no greater than {MAX_ACQUISITION_BUDGET_BYTES}",
+    )
+    return budget
+
+
+def snapshot_acquisition_inputs(
+    args: argparse.Namespace, snapshot_root: Path, budget: int
+) -> tuple[argparse.Namespace, int]:
+    """Freeze every external input before scientific preflight reads it."""
+    require(len(args.image) <= MAX_TARGETS, f"a target set may contain at most {MAX_TARGETS} uploaded images")
+    planned: list[tuple[str, Path, int, tuple[int, int, int, int, int, int]]] = []
+    if args.paper is not None:
+        source, signature = inspect_regular_source(args.paper, "paper", MAX_PDF_BYTES)
+        planned.append(("paper", source, MAX_PDF_BYTES, signature))
+    for index, raw in enumerate(args.image, start=1):
+        source, signature = inspect_regular_source(raw, f"target image {index}", MAX_IMAGE_BYTES)
+        planned.append((f"target image {index}", source, MAX_IMAGE_BYTES, signature))
+    input_bytes = sum(signature[3] for _, _, _, signature in planned)
+    require(
+        input_bytes <= budget,
+        "acquisition preflight exceeds the aggregate disk budget: "
+        f"inputs={input_bytes} bytes, estimated peak acquisition=at least {input_bytes} bytes, budget={budget} bytes",
+    )
+
+    paper_snapshot: Optional[Path] = None
+    image_snapshots: list[Path] = []
+    actual_bytes = 0
+    for purpose, source, maximum_bytes, signature in planned:
+        category = "paper" if purpose == "paper" else f"image-{len(image_snapshots) + 1:03d}"
+        destination = snapshot_root / category / source.name
+        actual_bytes += snapshot_regular_file(
+            source,
+            destination,
+            purpose,
+            maximum_bytes,
+            expected_signature=signature,
+        )
+        require(actual_bytes <= budget, "input snapshots exceed the aggregate disk budget")
+        if purpose == "paper":
+            paper_snapshot = destination
+        else:
+            image_snapshots.append(destination)
+    for root, directories, _ in os.walk(snapshot_root, topdown=False):
+        for directory in directories:
+            os.chmod(Path(root) / directory, 0o500)
+        os.chmod(root, 0o500)
+
+    frozen_args = argparse.Namespace(**vars(args))
+    frozen_args.paper = paper_snapshot
+    frozen_args.image = image_snapshots
+    frozen_args.original_input_paths = [source for _, source, _, _ in planned]
+    return frozen_args, actual_bytes
+
+
+def preflight_acquisition(args: argparse.Namespace, output: Path, snapshot_bytes: int = 0) -> dict:
     """Resolve identity, renderer, and aggregate disk estimate before output."""
     paper = checked_user_path(args.paper, "paper", must_exist=True) if args.paper else None
     images = [checked_user_path(path, "target image", must_exist=True) for path in args.image]
@@ -1210,7 +1658,7 @@ def preflight_acquisition(args: argparse.Namespace, output: Path) -> dict:
     require(len(all_ids) == len(set(all_ids)), "uploaded images and paper references resolve to duplicate target IDs")
 
     input_bytes = sum(source.stat().st_size for source in images)
-    estimated_bytes = 0
+    estimated_bytes = snapshot_bytes
     image_dimensions: Dict[str, Tuple[int, int]] = {}
     for source in images:
         width, height, image_estimate = image_preflight(source)
@@ -1228,10 +1676,11 @@ def preflight_acquisition(args: argparse.Namespace, output: Path) -> dict:
         with pdfplumber.open(paper) as pdf:
             require(1 <= len(pdf.pages) <= MAX_PDF_PAGES, f"paper must contain 1-{MAX_PDF_PAGES} pages")
             caption_index: Dict[int, List[Tuple[int, str, Tuple[float, float, float, float]]]] = {}
+            page_words = [extract_page_words(page) for page in pdf.pages]
             for figure_number in sorted(set(figure_numbers + uploaded_refs)):
                 matches = []
                 for page_index, page in enumerate(pdf.pages, start=1):
-                    result = caption_for(page, figure_number)
+                    result = caption_for(page, figure_number, page_words[page_index - 1])
                     if result:
                         matches.append((page_index, result[0], result[1]))
                 caption_index[figure_number] = matches
@@ -1266,20 +1715,12 @@ def preflight_acquisition(args: argparse.Namespace, output: Path) -> dict:
         renderer = resolve_pdftoppm(
             args.pdftoppm_executable,
             output=output,
-            inputs=([paper] if paper else []) + images,
+            inputs=([paper] if paper else []) + images + getattr(args, "original_input_paths", []),
         )
     elif args.pdftoppm_executable is not None:
         raise TargetError("--pdftoppm-executable is only used with --paper and --figures")
 
-    budget = (
-        DEFAULT_ACQUISITION_BUDGET_BYTES
-        if args.max_output_bytes is None
-        else args.max_output_bytes
-    )
-    require(
-        1 <= budget <= MAX_ACQUISITION_BUDGET_BYTES,
-        f"--max-output-bytes must be a positive integer no greater than {MAX_ACQUISITION_BUDGET_BYTES}",
-    )
+    budget = acquisition_budget(args)
     require(
         estimated_bytes <= budget,
         "acquisition preflight exceeds the aggregate disk budget: "
@@ -1333,7 +1774,7 @@ def materialize_into(args: argparse.Namespace, output: Path, plan: dict) -> int:
         paper_info = {
             "fileName": paper.name,
             "originalPath": paper_original.relative_to(output).as_posix(),
-            "sha256": sha256_file(paper),
+            "sha256": sha256_file(paper_original),
             "pageCount": len(pdf.pages),
         }
     targets: list[dict] = []
@@ -1351,7 +1792,7 @@ def materialize_into(args: argparse.Namespace, output: Path, plan: dict) -> int:
             reference_text = f"Fig. {reference}" if reference else None
             label = reference_text or source.stem
             normalized = figures_dir / f"{target_id} - {safe_filename(label, fallback=target_id, limit=140)}.png"
-            normalize_uploaded_image(source, normalized, args.dpi)
+            normalize_uploaded_image(original_copy, normalized, args.dpi)
             mode = "paper-with-images" if paper else "images-only"
             notes = ["User-supplied image preserved byte-for-byte in originals/."]
             matched_caption = None
@@ -1495,25 +1936,27 @@ def materialize_into(args: argparse.Namespace, output: Path, plan: dict) -> int:
 
 def materialize(args: argparse.Namespace) -> int:
     final_output = checked_user_path(args.output, "output directory", must_exist=False)
-    require(
-        not final_output.exists() or (final_output.is_dir() and not any(final_output.iterdir())),
-        "output directory must be new or empty",
-    )
-    plan = preflight_acquisition(args, final_output)
-    final_output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{final_output.name}.staging-", dir=final_output.parent))
+    try:
+        safe_parent = checked_directory_create_only(final_output.parent)
+    except SafeOutputError as exc:
+        raise TargetError(str(exc)) from exc
+    final_output = safe_parent / final_output.name
+    require(not os.path.lexists(final_output), "output directory must be new")
+    budget = acquisition_budget(args)
+    snapshot_root = Path(tempfile.mkdtemp(prefix=f".{final_output.name}.inputs-", dir=final_output.parent))
+    staging: Optional[Path] = None
     committed = False
     try:
-        target_count = materialize_into(args, staging, plan)
-        if final_output.exists():
-            # The preflight guaranteed this is an empty directory.  Keep it in
-            # place until every artifact and manifest hash has validated.
-            final_output.rmdir()
-        staging.replace(final_output)
+        frozen_args, snapshot_bytes = snapshot_acquisition_inputs(args, snapshot_root, budget)
+        plan = preflight_acquisition(frozen_args, final_output, snapshot_bytes)
+        staging = Path(tempfile.mkdtemp(prefix=f".{final_output.name}.staging-", dir=final_output.parent))
+        target_count = materialize_into(frozen_args, staging, plan)
+        rename_directory_create_only(staging, final_output)
         committed = True
     finally:
-        if not committed and staging.exists():
+        if not committed and staging is not None and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
+        remove_private_tree(snapshot_root)
     print(json.dumps({
         "status": "ok",
         "output": str(final_output),

@@ -8,7 +8,7 @@ Before expanding acquisition with another extraction/search branch, delegated ta
 
 ### Paper plus uploaded target images
 
-Preserve supplied bytes and normalize each image to a metadata-minimized PNG without changing aspect ratio. Bind it to the paper through the complete caption, panel labels, axes, legends, annotations, and only necessary nearby context—not its filename. Use scientific reproduction only after visual review establishes the binding; otherwise leave the target unresolved or explicitly image-derived.
+Preserve supplied bytes as the authoritative target object and create a metadata-minimized PNG only as a display/QA proxy without changing aspect ratio. Retain native 16-bit grayscale and alpha in that proxy where PNG supports them, but never let a preview conversion redefine target identity. Bind the target to the paper through the complete caption, panel labels, axes, legends, annotations, and only necessary nearby context—not its filename. Use scientific reproduction only after visual review establishes the binding; otherwise leave the target unresolved or explicitly image-derived.
 
 ### Paper plus figure references
 
@@ -18,11 +18,11 @@ Include every requested panel, axis, legend, label, annotation, figure identifie
 
 ### Target images alone
 
-Preserve and normalize every image. Use `image-derived-reconstruction`; do not invent paper identity, original data or method, evidence role, or a scientific claim.
+Preserve every image as the authoritative target and create a labeled display/QA proxy. Use `image-derived-reconstruction`; do not invent paper identity, original data or method, evidence role, or a scientific claim.
 
 ## Multi-target identity and QA
 
-Track every requested target separately with a stable ID, requested label, acquisition mode, workflow mode, source/normalized hashes, dimensions and crop, caption/paper binding when known, rights state, and QA status. Preserve parent figure and panel relationships. Verified targets may proceed independently while unresolved targets remain isolated.
+Track every requested target separately with a stable ID, requested label, acquisition mode, workflow mode, authoritative target path/media type/hash, display-proxy path/hash, dimensions and crop, caption/paper binding when known, rights state, and QA status. Preserve parent figure and panel relationships. Verified targets may proceed independently while unresolved targets remain isolated.
 
 Use these states internally:
 
@@ -32,7 +32,7 @@ Use these states internally:
 
 Execute only verified targets. If pixels change, preserve the prior identity internally, refresh the hash, and return only that target to pending.
 
-The normalized hash is the reproduction-object identity. A public proxy or later download does not replace it.
+For new manifests, `targetPath`, `targetMediaType`, and `targetSha256` bind the byte-preserved original that reproduction uses. `normalizedPath` and `normalizedSha256` bind a `display-qa-proxy`, which may be converted for safe viewing and comparison but is not authoritative. The validator continues to accept older manifests without `targetPath`, where `targetSha256` historically bound the normalized PNG; do not emit that legacy form for new targets. A public proxy or later download does not replace the bound target.
 
 ## Transient acquisition workspace
 
@@ -52,7 +52,7 @@ This tree belongs inside the transient workspace. It is not the customer deliver
 
 Resolve the skill root and task paths absolutely. The helper needs Python 3.10+, Pillow, and pdfplumber; automatic PDF rendering also needs Poppler `pdftoppm`. Before creating an environment, inspect host-provided bundled workspace runtimes and existing task or user environments. Reuse a compatible one; create a project-local environment under [permission-gates.md](permission-gates.md) only when none is suitable.
 
-Before creating a workspace, the helper inspects image dimensions, resolves requested PDF pages, totals input bytes, and estimates peak acquisition disk. The default automatic preflight allowance is 2 GiB; it is a planning check, not runtime enforcement. A reviewed task may pass a larger positive `--max-output-bytes` value up to the helper's 64 GiB ceiling. Failed preflight leaves no target workspace.
+Before scientific preflight, the helper copies every regular, non-symlinked input into a private read-only snapshot, verifies that its identity, size, timestamps, and hash stayed stable while copying, and then reads only those snapshots for caption indexing, crops, rendering, normalization, and preserved targets. Snapshot bytes count toward the peak disk estimate. The default automatic preflight allowance is 2 GiB; it is a planning check, not runtime enforcement. A reviewed task may pass a larger positive `--max-output-bytes` value up to the helper's 64 GiB ceiling. An unstable, oversized, or failed input leaves no target workspace or snapshot tree.
 
 PDF rendering does not execute `pdftoppm` from arbitrary `PATH`. Automatic resolution is limited to fixed trusted installation locations; otherwise pass a reviewed absolute, non-symlinked executable with `--pdftoppm-executable`. The helper constrains the rendering environment and timeout and redacts unsafe failure details.
 
@@ -70,7 +70,7 @@ python <skill-root>/scripts/materialize_target_figures.py \
   --verify-manifest targets/manifest.json --verify-targets fig-01,fig-03
 ```
 
-For a reviewed replacement, use `--replace-manifest`, `--replace-target`, and `--replacement-image`; do not edit normalized pixels in place. For a manual paper crop, bind its exact label, page, and complete caption with `--bind-manifest`; keep it pending until visual verification.
+For a reviewed replacement, use `--replace-manifest`, `--replace-target`, and `--replacement-image`; do not edit normalized pixels in place. Replacement first snapshots and validates the supplied image, then holds a workspace-exclusive manifest lock across version selection, create-only artifact publication, validation, and the atomic manifest update. Identity binding and visual-verification mutations use the same lock, so concurrent reviewers cannot silently lose one another's updates. A racing mutation, pre-existing leaf (including a dangling symlink), or oversized input fails without overwriting prior state. For a manual paper crop, bind its exact label, page, and complete caption with `--bind-manifest`; keep it pending until visual verification.
 
 ## Rights and customer boundary
 

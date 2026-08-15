@@ -500,6 +500,20 @@ class DeliveryAssemblerTests(unittest.TestCase):
             self.assertEqual(rejected.returncode, 2)
             self.assertIn("requires final sourceFiles", rejected.stderr)
 
+    def test_binary_image_cannot_masquerade_as_source_or_entrypoint(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            target = fixture.target("fig-01", reference=False)
+            target["sourceFiles"] = [fixture.artifact(
+                "work/disguised.png",
+                "reproduce.py",
+                b"\x89PNG\r\n\x1a\n" + b"\x00" * 256,
+            )]
+            rejected = run_assembler(fixture.plan([target]), root / "out", check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertFalse((root / "out/example-study-reproduction").exists())
+
     def test_required_data_and_model_are_delivered_by_explicit_role_only(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -606,6 +620,79 @@ class DeliveryAssemblerTests(unittest.TestCase):
             failed = run_assembler(plan, root / "out", check=False)
             self.assertEqual(failed.returncode, 2)
             self.assertIn("rerunArgv[0] references a file absent", failed.stderr)
+
+        for file_flag in ("--input", "--input-file"):
+            with self.subTest(file_flag=file_flag), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                fixture = Fixture(root)
+                plan = fixture.plan([fixture.target("fig-01", reference=False)])
+                value = json.loads(plan.read_text(encoding="utf-8"))
+                value["targets"][0]["rerunArgv"].extend([file_flag, "missing-input.csv"])
+                plan.write_text(json.dumps(value), encoding="utf-8")
+                rejected = run_assembler(plan, root / "out", check=False)
+                self.assertEqual(rejected.returncode, 2)
+                self.assertIn("references a file absent from the delivery", rejected.stderr)
+
+    def test_rerun_must_execute_declared_source_not_inline_code_or_a_decoy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            plan = fixture.plan([fixture.target("fig-01", reference=False)])
+            value = json.loads(plan.read_text(encoding="utf-8"))
+            value["targets"][0]["rerunArgv"] = [
+                "python3", "-c", "exec(open('reproduce.py').read())",
+            ]
+            plan.write_text(json.dumps(value), encoding="utf-8")
+            rejected = run_assembler(plan, root / "inline", check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("inline evaluation", rejected.stderr)
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            target = fixture.target("fig-01", reference=False)
+            target["sourceFiles"].append(
+                fixture.artifact("work/decoy.py", "decoy.py", "print('decoy')\n")
+            )
+            plan = fixture.plan([target])
+            value = json.loads(plan.read_text(encoding="utf-8"))
+            value["targets"][0]["rerunArgv"] = [
+                "python3", "decoy.py", "reproduce.py", "--config", "parameters.json",
+            ]
+            plan.write_text(json.dumps(value), encoding="utf-8")
+            rejected = run_assembler(plan, root / "decoy", check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("must invoke the declared entrypoint", rejected.stderr)
+
+    def test_python_isolation_and_bytecode_flags_still_invoke_the_entrypoint(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            plan = fixture.plan([fixture.target("fig-01", reference=False)])
+            value = json.loads(plan.read_text(encoding="utf-8"))
+            value["targets"][0]["rerunArgv"] = [
+                "python3", "-I", "-B", "reproduce.py", "--config", "parameters.json",
+            ]
+            plan.write_text(json.dumps(value), encoding="utf-8")
+            delivery = Path(json.loads(run_assembler(plan, root / "out").stdout)["path"])
+            readme = (delivery / "README.md").read_text(encoding="utf-8")
+            self.assertIn("python3 -I -B reproduce.py --config parameters.json", readme)
+
+    def test_rerun_interpreter_must_match_the_entrypoint_type(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            target = fixture.target("fig-01", reference=False)
+            target["sourceFiles"] = [fixture.artifact(
+                "fig-01/reproduce.m",
+                "reproduce.m",
+                "function reproduce\n  disp('result');\nend\n",
+            )]
+            target["_rerunExecutable"] = "reproduce.m"
+            target["_rerunCommand"] = "python3"
+            rejected = run_assembler(fixture.plan([target]), root / "out", check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("entrypoint type is incompatible", rejected.stderr)
 
     def test_target_relevant_native_stage_cannot_be_not_applicable(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1060,6 +1147,47 @@ class DeliveryAssemblerTests(unittest.TestCase):
             )
             self.assertEqual(len(list(delivery.rglob("common.csv"))), 1)
 
+    def test_common_artifact_cannot_be_a_main_result_or_rerun_output(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            shared = fixture.artifact(
+                "common/shared-result.png", "shared-result.png", b"shared result"
+            )
+            plan = fixture.plan([
+                fixture.target("fig-01", reference=False),
+                fixture.target("fig-02", reference=False),
+            ], common=[shared])
+            value = json.loads(plan.read_text(encoding="utf-8"))
+            for target in value["targets"]:
+                target["mainResult"] = {"commonRef": "shared-result.png"}
+            plan.write_text(json.dumps(value), encoding="utf-8")
+            rejected = run_assembler(plan, root / "main-result", check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("must be target-specific", rejected.stderr)
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            shared = fixture.artifact(
+                "common/shared-output.png", "shared-output.png", b"shared output"
+            )
+            first = fixture.target("fig-01", reference=False)
+            second = fixture.target("fig-02", reference=False)
+            for target in (first, second):
+                target["requestedExtras"] = [{
+                    "commonRef": "shared-output.png",
+                    "purpose": "downstream-use",
+                }]
+            plan = fixture.plan([first, second], common=[shared])
+            value = json.loads(plan.read_text(encoding="utf-8"))
+            for target in value["targets"]:
+                target["rerunOutputs"].append("common/shared-output.png")
+            plan.write_text(json.dumps(value), encoding="utf-8")
+            rejected = run_assembler(plan, root / "rerun-output", check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("rerunOutputs must be target-specific", rejected.stderr)
+
     def test_secrets_and_private_paths_are_rejected(self) -> None:
         cases = ("file", "argv", "prose")
         for case in cases:
@@ -1118,6 +1246,55 @@ class DeliveryAssemblerTests(unittest.TestCase):
                 "Profile: standard. File: generated result.",
                 (delivery / "README.md").read_text(encoding="utf-8"),
             )
+
+        for name, content in (
+            ("private-path.txt", "Generated from /Users/alice/private-project/data.csv.\n"),
+            (
+                "utf16-secret.txt",
+                b"\xff\xfe" + "API_KEY=supersecretvalue\n".encode("utf-16-le"),
+            ),
+            (
+                "utf32-secret.txt",
+                b"\xff\xfe\x00\x00" + "API_KEY=supersecretvalue\n".encode("utf-32-le"),
+            ),
+            (
+                "utf32-no-bom-secret.txt",
+                "API_KEY=supersecretvalue\n".encode("utf-32-le"),
+            ),
+        ):
+            with self.subTest(customer_file=name), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                fixture = Fixture(root)
+                target = fixture.target("fig-01", reference=False)
+                extra = fixture.artifact(f"work/{name}", name, content)
+                extra["purpose"] = "downstream-use"
+                target["requestedExtras"] = [extra]
+                rejected = run_assembler(fixture.plan([target]), root / "out", check=False)
+                self.assertEqual(rejected.returncode, 2)
+                self.assertFalse((root / "out/example-study-reproduction").exists())
+
+    def test_internal_plan_cannot_be_delivered_by_hardlink_or_byte_copy(self) -> None:
+        for mode in ("hardlink", "byte-copy"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                fixture = Fixture(root)
+                target = fixture.target("fig-01", reference=False)
+                disguised = fixture.artifact(
+                    "work/customer-notes.json", "customer-notes.json", "placeholder\n"
+                )
+                disguised["purpose"] = "downstream-use"
+                target["requestedExtras"] = [disguised]
+                plan = fixture.plan([target])
+                source = fixture.inputs / "work/customer-notes.json"
+                source.unlink()
+                if mode == "hardlink":
+                    os.link(plan, source)
+                else:
+                    source.write_bytes(plan.read_bytes())
+                rejected = run_assembler(plan, root / "out", check=False)
+                self.assertEqual(rejected.returncode, 2)
+                self.assertIn("internal delivery plan", rejected.stderr)
+                self.assertFalse((root / "out/example-study-reproduction").exists())
 
     def test_secret_text_inside_compressed_office_artifact_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1210,6 +1387,50 @@ class DeliveryAssemblerTests(unittest.TestCase):
                     self.assertEqual(failed.returncode, 2)
                     self.assertIn(expected, failed.stderr)
 
+    def test_archive_scan_budget_is_aggregate_and_compression_bombs_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            target = fixture.target("fig-01", reference=False)
+            extras = []
+            for archive_index in range(2):
+                package = fixture.inputs / f"many-members-{archive_index}.zip"
+                with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    for member_index in range(2050):
+                        archive.writestr(
+                            f"part-{archive_index}/member-{member_index:04d}.txt", b""
+                        )
+                extras.append({
+                    "source": package.relative_to(root).as_posix(),
+                    "name": f"many-members-{archive_index}.zip",
+                    "rights": "generated",
+                    "purpose": "downstream-use",
+                })
+            target["requestedExtras"] = extras
+            rejected = run_assembler(fixture.plan([target]), root / "aggregate", check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("aggregate member scan limit", rejected.stderr)
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            package = fixture.inputs / "compression-bomb.zip"
+            megabyte = b"\x00" * (1024 * 1024)
+            with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                with archive.open("large-zero-stream.bin", "w") as member:
+                    for _ in range(65):
+                        member.write(megabyte)
+            target = fixture.target("fig-01", reference=False)
+            target["requestedExtras"] = [{
+                "source": package.relative_to(root).as_posix(),
+                "name": "compression-bomb.zip",
+                "rights": "generated",
+                "purpose": "downstream-use",
+            }]
+            rejected = run_assembler(fixture.plan([target]), root / "ratio", check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("compression-ratio limit", rejected.stderr)
+
     def test_limitations_must_remain_customer_concise(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -1251,6 +1472,21 @@ class DeliveryAssemblerTests(unittest.TestCase):
                         }]
                     completed = run_assembler(fixture.plan([target]), root / "out", check=False)
                     self.assertEqual(completed.returncode, 2)
+
+    def test_output_root_rejects_a_symlink_ancestor_without_polluting_its_target(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = Fixture(root)
+            plan = fixture.plan([fixture.target("fig-01", reference=False)])
+            real = root / "real-output"
+            real.mkdir()
+            linked = root / "linked-output"
+            linked.symlink_to(real, target_is_directory=True)
+            requested_root = linked / "nested"
+            rejected = run_assembler(plan, requested_root, check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertFalse((real / "nested").exists())
+            self.assertFalse((real / "example-study-reproduction").exists())
 
     def test_existing_destination_is_never_replaced(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

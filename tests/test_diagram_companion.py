@@ -106,8 +106,9 @@ class DiagramCompanionTests(unittest.TestCase):
                     "args": args,
                     "githubTokenPresent": bool(os.environ.get("GITHUB_TOKEN")),
                     "ghTokenPresent": bool(os.environ.get("GH_TOKEN")),
+                    "unexpectedCredentialPresent": bool(os.environ.get("AUDIT_FAKE_CREDENTIAL")),
                 }
-                Path(os.environ["MOCK_ARGS_PATH"]).write_text(json.dumps(record), encoding="utf-8")
+                Path(__ARGS_PATH__).write_text(json.dumps(record), encoding="utf-8")
                 dest = Path(args[args.index("--dest") + 1]) / args[args.index("--name") + 1]
                 (dest / "scripts").mkdir(parents=True)
                 (dest / "agents").mkdir(parents=True)
@@ -124,14 +125,14 @@ class DiagramCompanionTests(unittest.TestCase):
                 (dest / "scripts" / "panel_crop.py").write_text("# mock\\n", encoding="utf-8")
                 (dest / "scripts" / "probe_runtime.mjs").write_text("// mock\\n", encoding="utf-8")
                 (dest / "scripts" / "render_pptx.py").write_text("# mock\\n", encoding="utf-8")
-                """,
+                """.replace("__ARGS_PATH__", repr(str(args_path))),
             )
 
             completed = self.run_ensure(
                 home,
-                MOCK_ARGS_PATH=str(args_path),
                 GITHUB_TOKEN="must-not-reach-installer",
                 GH_TOKEN="must-not-reach-installer",
+                AUDIT_FAKE_CREDENTIAL="supersecretvalue",
             )
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -142,6 +143,7 @@ class DiagramCompanionTests(unittest.TestCase):
             record = json.loads(args_path.read_text(encoding="utf-8"))
             self.assertFalse(record["githubTokenPresent"])
             self.assertFalse(record["ghTokenPresent"])
+            self.assertFalse(record["unexpectedCredentialPresent"])
             args = record["args"]
             self.assertEqual(args[args.index("--repo") + 1], SOURCE_REPO)
             self.assertEqual(args[args.index("--path") + 1], SOURCE_PATH)
@@ -151,7 +153,7 @@ class DiagramCompanionTests(unittest.TestCase):
             self.assertEqual(args[args.index("--dest") + 1], str(home / "skills"))
 
     def test_existing_conflicts_fail_closed_without_invoking_installer(self) -> None:
-        scenarios = ("regular-file", "wrong-name", "missing-critical", "symlink")
+        scenarios = ("regular-file", "wrong-name", "missing-critical", "symlink", "nested-symlink")
         for scenario in scenarios:
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as raw:
                 root = Path(raw)
@@ -164,11 +166,23 @@ class DiagramCompanionTests(unittest.TestCase):
                     write_valid_skill(skill_dir, name="not-the-companion")
                 elif scenario == "missing-critical":
                     write_valid_skill(skill_dir, include_scripts=False)
-                else:
+                elif scenario == "symlink":
                     real = root / "real-skill"
                     write_valid_skill(real)
                     skill_dir.parent.mkdir(parents=True)
                     skill_dir.symlink_to(real, target_is_directory=True)
+                else:
+                    write_valid_skill(skill_dir)
+                    real_scripts = root / "real-scripts"
+                    real_scripts.mkdir()
+                    for script_name in (
+                        "check_pptx.py", "panel_crop.py", "probe_runtime.mjs", "render_pptx.py",
+                    ):
+                        (real_scripts / script_name).write_text("# fixture\n", encoding="utf-8")
+                    for child in (skill_dir / "scripts").iterdir():
+                        child.unlink()
+                    (skill_dir / "scripts").rmdir()
+                    (skill_dir / "scripts").symlink_to(real_scripts, target_is_directory=True)
 
                 marker = root / "installer-called"
                 self.write_mock_installer(
@@ -227,6 +241,20 @@ class DiagramCompanionTests(unittest.TestCase):
 
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("refusing symlink", completed.stderr)
+
+    def test_symlinked_codex_home_ancestor_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            real_parent = root / "real-parent"
+            real_home = real_parent / "codex"
+            (real_home / "skills").mkdir(parents=True)
+            linked_parent = root / "linked-parent"
+            linked_parent.symlink_to(real_parent, target_is_directory=True)
+
+            completed = self.run_ensure(linked_parent / "codex")
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("symlink ancestor", completed.stderr)
 
 
 if __name__ == "__main__":
