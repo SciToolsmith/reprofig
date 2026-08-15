@@ -66,14 +66,17 @@ A missing companion Skill may be deployed only from a pinned public commit withi
 
 ## What the customer receives
 
-When persistent work exists, SciRepro assembles one concise customer folder from a transient internal workspace. It contains:
+When persistent work exists, SciRepro assembles one concise customer folder from a transient internal workspace. It is the finished result plus the materials needed to produce it, not an archive of Codex's work. By default it contains:
 
-- a short start document leading with the scientific outcome, limits, and rerun command;
-- the primary figure or editable artifact for each target;
-- only code, configuration, irreplaceable inputs, dependencies, and licenses needed for an honest rerun; and
-- reference images, numeric data, or comparisons only when explicitly requested, needed downstream, or independently material to the conclusion.
+- the final figure, editable artifact, or other primary result;
+- the actual final code or editable source that produces it, not working drafts;
+- configuration, data, model weights, checkpoints, calibration files, or other inputs that the code actually reads and cannot regenerate from delivered material;
+- the minimum dependency declaration or environment file and licenses required by included third-party material; and
+- a short README containing the conclusion, one exact rerun command, required inputs and dependencies, and only limitations or rights that affect interpretation or reuse.
 
-Validation JSON, runtime/license probe records, iteration traces, sensitivity details, regenerated CSV files, raw search history, debugging logs, QA overlays, internal manifests, broad machine inventories, and irrelevant intermediate versions stay in the transient workspace by default. Material facts are summarized directly in the README. A single-target delivery no longer repeats internal route and three-status tables.
+Required data or models that are too large, access-controlled, or not redistributable are not silently omitted: the delivery gives a lawful, pinned acquisition method, version, and an available checksum, and states that the folder is not fully self-contained. Numeric tables, comparisons, or other extras are included only when explicitly requested, needed downstream, or independently valuable.
+
+Validation JSON, runtime/license probe records, iteration traces, sensitivity details, regenerated CSV files, raw search history, debugging logs, QA overlays, internal manifests, V0, reference crops, and irrelevant intermediate versions stay in the transient workspace by default. Only facts that materially change the conclusion enter the short README. Final code produces only the primary result by default; diagnostics and data exports require explicit options. Before delivery, SciRepro runs the README command in a clean copy containing only the proposed customer files and checks for local paths, caches, undeclared inputs, and rerun noise; the check record is not delivered. If blocked work has no durable reusable result, SciRepro answers in chat instead of manufacturing a folder.
 
 ## License
 

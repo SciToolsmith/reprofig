@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 
-PLAN_SCHEMA = "scirepro.delivery-plan/v3"
+PLAN_SCHEMA = "scirepro.delivery-plan/v4"
 MAX_PLAN_BYTES = 1024 * 1024
 MAX_FILE_BYTES = 256 * 1024 * 1024
 MAX_TOTAL_BYTES = 1024 * 1024 * 1024
@@ -59,7 +59,48 @@ RIGHTS_STATUSES = {
     "generated", "included-permitted", "public-domain", "local-only",
 }
 SHAREABLE_RIGHTS = {"generated", "included-permitted", "public-domain"}
-SUPPORTING_PURPOSES = {"requested-output", "downstream-use", "material-comparison"}
+EXTRA_PURPOSES = {"requested-output", "downstream-use"}
+ROOT_RESERVED_NAMES = {"common", "licenses", "readme.md"}
+DELIVERY_ROLE_FIELDS = (
+    "sourceFiles", "configFiles", "inputFiles", "modelFiles",
+    "environmentFiles", "requestedExtras",
+)
+PREVIEW_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".svg"}
+EDITABLE_RESULT_SUFFIXES = {
+    ".pptx", ".svg", ".drawio", ".fig", ".ai", ".eps", ".odg",
+}
+ALWAYS_TRANSIENT_NAME = re.compile(
+    r"(?i)(?:^|[._-])(?:delivery[-_]?plan|resource[-_]?usage|"
+    r"qa[-_]?(?:report|overlay|check)|editability[-_]?check|"
+    r"(?:baseline[-_]?)?v0|original[-_]?vs[-_]?v0|reference[-_]?crop)"
+    r"(?:[._-]|$)"
+)
+PROCESS_RECORD_NAME = re.compile(
+    r"(?i)(?:^|[._-])(?:"
+    r"manifest|"
+    r"(?:environment|runtime|installed|package)(?:[-_][a-z0-9]+)*"
+    r"[-_](?:packages|inventory|snapshot)|"
+    r"(?:runtime|environment|route|matlab|license|capability)[-_]?probe|"
+    r"(?:source|environment|rights|capability)[-_]?audit|"
+    r"iteration[-_]?trace|sensitivity[-_]?(?:summary|results|details|grid)"
+    r")(?:[._-]|$)"
+)
+VALIDATION_RECORD_NAME = re.compile(r"(?i)(?:^|[._-])(?:validation|verify)(?:[._-]|$)")
+CONFIGURATION_NAME = re.compile(r"(?i)(?:^|[._-])(?:config|criteria|parameters|settings)(?:[._-]|$)")
+DATA_MODEL_NAME = re.compile(
+    r"(?i)(?:^|[._-])(?:data|dataset|input|model|weights|checkpoint)(?:[._-]|$)"
+)
+INTERNAL_RECORD_SUFFIXES = {".csv", ".json", ".ndjson", ".tsv", ".txt", ".yaml", ".yml"}
+SCIENTIFIC_DATA_MODEL_SUFFIXES = {
+    ".bin", ".ckpt", ".csv", ".h5", ".hdf5", ".mat", ".model", ".npy",
+    ".npz", ".onnx", ".parquet", ".pickle", ".pkl", ".pt", ".pth",
+    ".safetensors", ".tsv",
+}
+SOURCE_CODE_SUFFIXES = {
+    ".bash", ".c", ".cc", ".cpp", ".f", ".f90", ".f95", ".go", ".h",
+    ".hpp", ".ipynb", ".jl", ".js", ".m", ".mjs", ".mlx", ".p", ".py",
+    ".r", ".rs", ".sh", ".sql", ".ts",
+}
 RERUN_PATH_SUFFIXES = {
     ".bash", ".cfg", ".csv", ".h5", ".hdf5", ".ini", ".ipynb", ".jl",
     ".js", ".json", ".m", ".mat", ".mjs", ".mlx", ".npy", ".npz", ".p",
@@ -149,6 +190,7 @@ class CopyArtifact:
 class ArtifactLink:
     destination: Path
     label: str
+    rights: str
     purpose: Optional[str] = None
 
 
@@ -444,11 +486,11 @@ def _parse_link(
     distribution: str,
 ) -> Tuple[Optional[CopyArtifact], Optional[str], str]:
     require(isinstance(value, dict), f"{label} must be an object")
-    if "sharedRef" in value:
-        _ensure_keys(value, {"sharedRef", "label"}, {"sharedRef"}, label)
-        shared_name = _safe_output_name(value["sharedRef"], f"{label}.sharedRef")
-        display = _human_line(value.get("label", shared_name), f"{label}.label", 200)
-        return None, shared_name, display
+    if "commonRef" in value:
+        _ensure_keys(value, {"commonRef", "label"}, {"commonRef"}, label)
+        common_name = _safe_output_name(value["commonRef"], f"{label}.commonRef")
+        display = _human_line(value.get("label", common_name), f"{label}.label", 200)
+        return None, common_name, display
     artifact = _parse_copy(
         value,
         plan_path=plan_path,
@@ -459,7 +501,7 @@ def _parse_link(
     return artifact, None, artifact.label
 
 
-def _parse_supporting_link(
+def _parse_extra_link(
     value: object,
     *,
     plan_path: Path,
@@ -469,7 +511,7 @@ def _parse_supporting_link(
 ) -> Tuple[Optional[CopyArtifact], Optional[str], str, str]:
     require(isinstance(value, dict), f"{label} must be an object")
     purpose = _single_line(value.get("purpose"), f"{label}.purpose", 64)
-    require(purpose in SUPPORTING_PURPOSES, f"unsupported customer purpose for {label}: {purpose}")
+    require(purpose in EXTRA_PURPOSES, f"unsupported customer purpose for {label}: {purpose}")
     artifact_value = {key: item for key, item in value.items() if key != "purpose"}
     artifact, shared_ref, display = _parse_link(
         artifact_value,
@@ -479,6 +521,79 @@ def _parse_supporting_link(
         distribution=distribution,
     )
     return artifact, shared_ref, display, purpose
+
+
+def _portable_delivery_path(value: object, label: str) -> str:
+    path = _single_line(value, label, 512).replace("\\", "/")
+    require(not path.startswith("/"), f"{label} must be relative to the delivery root")
+    require("//" not in path, f"{label} contains an empty path component")
+    parts = Path(path).parts
+    require(parts and all(part not in {"", ".", ".."} for part in parts), f"unsafe {label}: {path}")
+    require(WINDOWS_ABSOLUTE.search(path) is None, f"{label} contains an absolute path")
+    require(PRIVATE_PATH.search(path) is None, f"{label} contains a private path")
+    return Path(*parts).as_posix()
+
+
+def _reject_internal_process_artifact(link: ArtifactLink, role: str, label: str) -> None:
+    """Keep transient process evidence out without rejecting legitimate validation code/data."""
+    name = link.destination.name
+    suffix = Path(name).suffix.casefold()
+    always_transient = ALWAYS_TRANSIENT_NAME.search(name) is not None
+    require(
+        suffix != ".log" and not always_transient,
+        f"{label} is internal process evidence and may not be delivered as {role}",
+    )
+    if role == "sourceFiles" and suffix in SOURCE_CODE_SUFFIXES:
+        return
+    validation_record = (
+        suffix in INTERNAL_RECORD_SUFFIXES
+        and VALIDATION_RECORD_NAME.search(name) is not None
+        and not (role == "configFiles" and CONFIGURATION_NAME.search(name) is not None)
+    )
+    if role in {"inputFiles", "modelFiles"} and validation_record:
+        validation_record = not (
+            suffix in SCIENTIFIC_DATA_MODEL_SUFFIXES or DATA_MODEL_NAME.search(name) is not None
+        )
+    machine_process_record = (
+        suffix in INTERNAL_RECORD_SUFFIXES
+        and PROCESS_RECORD_NAME.search(name) is not None
+        and not (
+            role in {"inputFiles", "modelFiles"}
+            and DATA_MODEL_NAME.search(name) is not None
+        )
+    )
+    require(
+        not validation_record
+        and not machine_process_record,
+        f"{label} is internal process evidence and may not be delivered as {role}",
+    )
+
+
+def _validate_environment_artifact(link: ArtifactLink, label: str) -> None:
+    """Environment artifacts are dependency declarations, never probe/package snapshots."""
+    name = link.destination.name.casefold()
+    allowed = (
+        re.fullmatch(r"requirements(?:[._-][a-z0-9._-]+)?\.(?:txt|in)", name) is not None
+        or re.fullmatch(r"constraints(?:[._-][a-z0-9._-]+)?\.txt", name) is not None
+        or re.fullmatch(
+            r"(?:[a-z0-9._-]+[-_])?environment(?:[._-][a-z0-9._-]+)?\.(?:yml|yaml|txt)",
+            name,
+        ) is not None
+        or re.fullmatch(r"conda-lock(?:[._-][a-z0-9._-]+)?\.(?:yml|yaml)", name) is not None
+        or re.fullmatch(r"(?:docker|container)file(?:\.[a-z0-9._-]+)?", name) is not None
+        or re.fullmatch(r"(?:docker-)?compose(?:\.[a-z0-9._-]+)?\.(?:yml|yaml)", name) is not None
+        or name in {
+            "pyproject.toml", "setup.cfg", "poetry.lock", "uv.lock", "pdm.lock",
+            "pipfile", "pipfile.lock", "package.json", "package-lock.json",
+            "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "project.toml",
+            "manifest.toml", "pixi.toml", "pixi.lock", "cargo.toml", "cargo.lock",
+            "go.mod", "go.sum", "go.work", "go.work.sum", "package.swift",
+            "package.resolved", "gemfile", "gemfile.lock", "composer.json",
+            "composer.lock", "vcpkg.json", "conanfile.txt", "spack.yaml",
+            "spack.lock", "renv.lock", "description", "runtime.txt",
+        }
+    )
+    require(allowed, f"{label} must be a minimal dependency/environment declaration")
 
 
 def _parse_rerun(value: object, label: str) -> List[str]:
@@ -509,14 +624,9 @@ def _validate_rerun_paths(target: dict) -> None:
     argv = target["rerunArgv"]
     if not argv:
         return
-    links = [
-        *target["rerunLinks"],
-        *target["supportingLinks"],
-    ]
+    links = [link for role in DELIVERY_ROLE_FIELDS for link in target["roleLinks"][role]]
     if target["mainLink"] is not None:
         links.append(target["mainLink"])
-    if target["referenceLink"] is not None:
-        links.append(target["referenceLink"])
     allowed = {link.destination.as_posix() for link in links}
     skip_next_expression = False
     for index, argument in enumerate(argv):
@@ -546,6 +656,33 @@ def _validate_rerun_paths(target: dict) -> None:
                 f"{target['id']} rerunArgv[{index}] references a file absent from the delivery: {candidate}",
             )
 
+    source_paths = {
+        link.destination.as_posix() for link in target["roleLinks"]["sourceFiles"]
+    }
+    require(
+        target["entrypoint"] in source_paths,
+        f"{target['id']} entrypoint must resolve to a delivered sourceFiles artifact",
+    )
+    command_text = " ".join(argv)
+    require(
+        target["entrypoint"] in argv or target["entrypoint"] in command_text,
+        f"{target['id']} rerunArgv must invoke the declared entrypoint",
+    )
+
+    allowed_outputs = {target["mainLink"].destination.as_posix()} if target["mainLink"] else set()
+    allowed_outputs.update(
+        link.destination.as_posix() for link in target["roleLinks"]["requestedExtras"]
+    )
+    require(
+        set(target["rerunOutputs"]).issubset(allowed_outputs),
+        f"{target['id']} rerunOutputs may contain only the main result or explicitly requested extras",
+    )
+    if target["mainLink"] is not None:
+        require(
+            target["mainLink"].destination.as_posix() in target["rerunOutputs"],
+            f"{target['id']} rerunOutputs must include the main result",
+        )
+
 
 def _markdown(value: str) -> str:
     escaped = html.escape(value, quote=False).replace("\\", "\\\\")
@@ -556,15 +693,11 @@ def _link_text(link: ArtifactLink) -> str:
     return f"[{_markdown(link.label)}]({link.destination.as_posix()})"
 
 
-def _route_label(route: str) -> str:
-    return {
-        "direct-recompute": "original/official case recomputation",
-        "mechanism-reproduction": "mechanism-level reproduction",
-        "alternative-validation": "alternative validation",
-        "image-derived-reconstruction": "image-derived reconstruction",
-        "original-case-blocked": "original case blocked",
-        "semantic-diagram-handoff": "editable schematic reconstruction",
-    }[route]
+def _result_text(link: ArtifactLink) -> List[str]:
+    lines = [f"**Main result:** {_link_text(link)}"]
+    if link.destination.suffix.casefold() in PREVIEW_SUFFIXES:
+        lines.extend(["", f"![{_markdown(link.label)}]({link.destination.as_posix()})"])
+    return lines
 
 
 def _engine_label(engine: str) -> str:
@@ -588,24 +721,6 @@ def _stage_label(stage: str) -> str:
     }[stage]
 
 
-def _outcome_text(target: dict) -> str:
-    if target["kind"] in {"image-derived", "semantic-diagram"}:
-        return {
-            "passed": "The requested reconstruction was completed and passed its declared check.",
-            "partially-passed": "A useful reconstruction was produced, but some declared checks remain unmet.",
-            "failed": "The attempted reconstruction did not pass its declared check.",
-            "inconclusive": "The reconstruction was attempted, but the declared check was inconclusive.",
-            "not-run": "No defensible reconstruction was completed.",
-        }[target["validationStatus"]]
-    return {
-        "supported": "The tested scientific claim is supported within the stated scope.",
-        "partially-supported": "The tested scientific claim is partially supported within the stated scope.",
-        "unsupported": "A valid completed test did not support the tested scientific claim.",
-        "inconclusive": "The scientific test was attempted but remains inconclusive.",
-        "not-tested": "The scientific claim was not tested.",
-    }[target["claimStatus"]]
-
-
 def _deduplicated_lines(*groups: Sequence[str]) -> List[str]:
     result: List[str] = []
     seen: set[str] = set()
@@ -619,26 +734,23 @@ def _deduplicated_lines(*groups: Sequence[str]) -> List[str]:
 
 
 def _build_readme(plan: dict, targets: List[dict], licenses: List[CopyArtifact]) -> str:
-    lines = [
-        f"# {_markdown(plan['title'])}",
-        "",
-        f"> {_markdown(plan['conclusion'])}",
-    ]
+    lines = [f"# {_markdown(plan['title'])}"]
 
     if len(targets) > 1:
         lines.extend([
             "",
+            f"> {_markdown(plan['conclusion'])}",
+            "",
             "## Results",
             "",
-            "| Target | Result | Outcome |",
-            "|---|---|---|",
+            "| Target | Main result |",
+            "|---|---|",
         ])
         for target in targets:
             lines.append(
                 "| " + " | ".join((
                     f"`{target['id']}` — {_markdown(target['title'])}",
                     "No result" if target["mainLink"] is None else _link_text(target["mainLink"]),
-                    _markdown(_outcome_text(target)),
                 )) + " |"
             )
 
@@ -648,10 +760,6 @@ def _build_readme(plan: dict, targets: List[dict], licenses: List[CopyArtifact])
             "## Result" if len(targets) == 1 else f"## `{target['id']}` — {_markdown(target['title'])}",
             "",
             _markdown(target["conclusion"]),
-            "",
-            f"**Outcome:** {_markdown(_outcome_text(target))}",
-            "",
-            f"**Method:** {_markdown(_route_label(target['route']))}.",
         ])
         material_substitutions = [
             decision
@@ -675,34 +783,28 @@ def _build_readme(plan: dict, targets: List[dict], licenses: List[CopyArtifact])
         if target["mainLink"] is None:
             lines.extend(["", "**Main result:** No result"])
         else:
-            lines.extend(["", f"**Main result:** {_link_text(target['mainLink'])}"])
+            lines.append("")
+            lines.extend(_result_text(target["mainLink"]))
+        if target["route"] == "mechanism-reproduction":
+            lines.extend(["", "**Scope:** mechanism-level reproduction."])
+        elif target["route"] == "alternative-validation":
+            lines.extend(["", "**Scope:** independent or alternative validation."])
         if target["kind"] == "image-derived":
             if target["mainLink"] is None:
                 lines.extend(["", (
-                    "**Evidence boundary:** No image-derived reconstruction was produced; "
+                    "**Scope:** No image-derived reconstruction was produced; "
                     "the supplied pixels did not identify the information required for the requested result."
                 )])
             else:
                 lines.extend(["", (
-                    "**Evidence boundary:** This reconstructs visible geometry, values, or appearance; "
+                    "**Scope:** image-derived reconstruction of visible geometry, values, or appearance; "
                     "it does not recover or validate the original data, method, experiment, or scientific conclusion."
                 )])
         elif target["kind"] == "semantic-diagram":
             lines.extend(["", (
-                "**Evidence boundary:** Validation concerns schematic fidelity and editability, "
-                "not support for a scientific claim."
+                "**Scope:** editable reconstruction of the supplied schematic; "
+                "it does not test a scientific claim."
             )])
-        if target["validationBasis"]:
-            lines.extend(["", "### What was checked", ""])
-            lines.extend(f"- {_markdown(item)}" for item in target["validationBasis"])
-        if target["referenceLink"] is not None:
-            lines.extend(["", f"**Reference:** {_link_text(target['referenceLink'])}"])
-        if target["supportingLinks"]:
-            lines.extend(["", "### Supporting results", ""])
-            lines.extend(
-                f"- {_link_text(link)}"
-                for link in target["supportingLinks"]
-            )
         if target["rerunArgv"]:
             lines.extend([
                 "",
@@ -714,18 +816,34 @@ def _build_readme(plan: dict, targets: List[dict], licenses: List[CopyArtifact])
                 shlex.join(target["rerunArgv"]),
                 "```",
             ])
-            if target["rerunLinks"]:
-                lines.append(
-                    "Re-run files: " + ", ".join(_link_text(link) for link in target["rerunLinks"]) + "."
-                )
             lines.append(f"Dependencies: {_markdown(target['dependencyNote'])}")
+        role_labels = {
+            "sourceFiles": "Code",
+            "configFiles": "Configuration",
+            "inputFiles": "Required input",
+            "modelFiles": "Required models",
+            "environmentFiles": "Environment",
+            "requestedExtras": "Requested additional files",
+        }
+        material_roles = [role for role in DELIVERY_ROLE_FIELDS if target["roleLinks"][role]]
+        if material_roles:
+            lines.extend(["", "### Files", ""])
+            for role in material_roles:
+                links = ", ".join(_link_text(link) for link in target["roleLinks"][role])
+                lines.append(f"- **{role_labels[role]}:** {links}")
         assumptions_and_limits = _deduplicated_lines(
             target["materialAssumptions"], target["limitations"]
         )
         if assumptions_and_limits:
             lines.extend(["", "### Assumptions and limits", ""])
             lines.extend(f"- {_markdown(item)}" for item in assumptions_and_limits)
-        lines.extend(["", "### Rights", "", _markdown(target["rights"])])
+        has_third_party = any(
+            link.rights != "generated"
+            for role in DELIVERY_ROLE_FIELDS
+            for link in target["roleLinks"][role]
+        ) or (target["mainLink"] is not None and target["mainLink"].rights != "generated")
+        if has_third_party:
+            lines.extend(["", "### Third-party materials", "", _markdown(target["rights"])])
 
     if licenses:
         lines.extend(["", "## Licenses", ""])
@@ -1012,7 +1130,7 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
     plan = _read_plan(plan_path)
     _ensure_keys(
         plan,
-        {"schemaVersion", "title", "slug", "distribution", "conclusion", "targets", "shared", "licenses"},
+        {"schemaVersion", "title", "slug", "distribution", "conclusion", "targets", "common", "licenses"},
         {"schemaVersion", "title", "slug", "distribution", "conclusion", "targets"},
         "delivery plan",
     )
@@ -1027,24 +1145,28 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
     require(1 <= len(plan["targets"]) <= MAX_TARGETS, f"targets must contain 1-{MAX_TARGETS} entries")
 
     copies: List[CopyArtifact] = []
-    shared: List[CopyArtifact] = []
+    common: List[CopyArtifact] = []
     licenses: List[CopyArtifact] = []
-    shared_names: Dict[str, CopyArtifact] = {}
+    common_names: Dict[str, CopyArtifact] = {}
 
-    require(isinstance(plan.get("shared", []), list), "shared must be a list")
+    require(isinstance(plan.get("common", []), list), "common must be a list")
     require(isinstance(plan.get("licenses", []), list), "licenses must be a list")
-    for index, value in enumerate(plan.get("shared", [])):
+    require(
+        len(plan["targets"]) > 1 or not plan.get("common", []),
+        "single-target deliveries are flat and may not declare common artifacts",
+    )
+    for index, value in enumerate(plan.get("common", [])):
         artifact = _parse_copy(
             value,
             plan_path=plan_path,
-            destination_parent=Path("shared"),
-            label=f"shared[{index}]",
+            destination_parent=Path("common"),
+            label=f"common[{index}]",
             distribution=distribution,
         )
         key = artifact.destination.name.casefold()
-        require(key not in shared_names, f"duplicate shared name: {artifact.destination.name}")
-        shared_names[key] = artifact
-        shared.append(artifact)
+        require(key not in common_names, f"duplicate common name: {artifact.destination.name}")
+        common_names[key] = artifact
+        common.append(artifact)
         copies.append(artifact)
 
     for index, value in enumerate(plan.get("licenses", [])):
@@ -1074,14 +1196,16 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
         )
         if artifact is not None:
             copies.append(artifact)
-            return ArtifactLink(artifact.destination, artifact.label)
+            return ArtifactLink(artifact.destination, artifact.label, artifact.rights)
         pending_refs.append((target, field, shared_ref or "", display))
-        return ArtifactLink(Path("shared") / (shared_ref or ""), display)
+        common_artifact = common_names.get((shared_ref or "").casefold())
+        rights = common_artifact.rights if common_artifact is not None else "generated"
+        return ArtifactLink(Path("common") / (shared_ref or ""), display, rights)
 
-    def parse_target_supporting(
+    def parse_target_extra(
         raw: object, target: dict, label: str
     ) -> ArtifactLink:
-        artifact, shared_ref, display, purpose = _parse_supporting_link(
+        artifact, shared_ref, display, purpose = _parse_extra_link(
             raw,
             plan_path=plan_path,
             destination_parent=target["destinationParent"],
@@ -1090,9 +1214,11 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
         )
         if artifact is not None:
             copies.append(artifact)
-            return ArtifactLink(artifact.destination, artifact.label, purpose)
-        pending_refs.append((target, "supporting-result", shared_ref or "", display))
-        return ArtifactLink(Path("shared") / (shared_ref or ""), display, purpose)
+            return ArtifactLink(artifact.destination, artifact.label, artifact.rights, purpose)
+        pending_refs.append((target, "requested-extra", shared_ref or "", display))
+        common_artifact = common_names.get((shared_ref or "").casefold())
+        rights = common_artifact.rights if common_artifact is not None else "generated"
+        return ArtifactLink(Path("common") / (shared_ref or ""), display, rights, purpose)
 
     for index, raw_target in enumerate(plan["targets"]):
         label = f"targets[{index}]"
@@ -1102,14 +1228,14 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
             {
                 "id", "title", "kind", "operationalStatus", "validationStatus",
                 "claimStatus", "route", "stageDecisions", "validationBasis", "materialAssumptions",
-                "blocker", "conclusion", "mainResult", "reference",
-                "rerunFiles", "supportingResults",
-                "dependencyNote", "rerunArgv", "limitations", "rights",
+                "blocker", "conclusion", "mainResult",
+                *DELIVERY_ROLE_FIELDS,
+                "entrypoint", "rerunOutputs", "dependencyNote", "rerunArgv", "limitations", "rights",
             },
             {
                 "id", "title", "kind", "operationalStatus", "validationStatus",
                 "claimStatus", "route", "stageDecisions", "validationBasis", "materialAssumptions",
-                "conclusion", "mainResult", "rerunFiles", "supportingResults",
+                "conclusion", "mainResult", *DELIVERY_ROLE_FIELDS,
                 "limitations", "rights",
             },
             label,
@@ -1117,6 +1243,10 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
         target_id = _single_line(raw_target["id"], f"{label}.id", 128)
         require(TARGET_ID.fullmatch(target_id) is not None, f"unsafe target id: {target_id}")
         folded_id = target_id.casefold()
+        require(
+            folded_id not in ROOT_RESERVED_NAMES,
+            f"target id conflicts with a reserved delivery-root name: {target_id}",
+        )
         require(folded_id not in target_ids, f"duplicate target id: {target_id}")
         target_ids.add(folded_id)
         target = {
@@ -1139,7 +1269,7 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
             "dependencyNote": None,
             "blocker": None,
             "destinationParent": (
-                Path() if len(plan["targets"]) == 1 else Path("figures") / target_id
+                Path() if len(plan["targets"]) == 1 else Path(target_id)
             ),
         }
         require(target["kind"] in TARGET_KINDS, f"unsupported target kind: {target['kind']}")
@@ -1172,32 +1302,65 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
             )
         else:
             target["mainLink"] = parse_target_artifact(raw_target["mainResult"], target, "main-result", f"{label}.mainResult")
-        target["referenceLink"] = None
-        if raw_target.get("reference") is not None:
-            target["referenceLink"] = parse_target_artifact(raw_target["reference"], target, "reference", f"{label}.reference")
-        rerun_items = raw_target["rerunFiles"]
-        require(isinstance(rerun_items, list), f"{label}.rerunFiles must be a list")
-        require(len(rerun_items) <= 64, f"{label}.rerunFiles has too many entries")
-        target["rerunLinks"] = [
-            parse_target_artifact(item, target, "rerun-file", f"{label}.rerunFiles[{item_index}]")
-            for item_index, item in enumerate(rerun_items)
-        ]
-        supporting_items = raw_target["supportingResults"]
-        require(isinstance(supporting_items, list), f"{label}.supportingResults must be a list")
-        require(len(supporting_items) <= 16, f"{label}.supportingResults has too many entries")
-        target["supportingLinks"] = [
-            parse_target_supporting(item, target, f"{label}.supportingResults[{item_index}]")
-            for item_index, item in enumerate(supporting_items)
-        ]
+            _reject_internal_process_artifact(
+                target["mainLink"], "mainResult", f"{label}.mainResult"
+            )
+        target["roleLinks"] = {}
+        for role in DELIVERY_ROLE_FIELDS:
+            items = raw_target[role]
+            require(isinstance(items, list), f"{label}.{role} must be a list")
+            limit = 16 if role == "requestedExtras" else 64
+            require(len(items) <= limit, f"{label}.{role} has too many entries")
+            if role == "requestedExtras":
+                links = [
+                    parse_target_extra(item, target, f"{label}.{role}[{item_index}]")
+                    for item_index, item in enumerate(items)
+                ]
+                for item_index, link in enumerate(links):
+                    _reject_internal_process_artifact(
+                        link, role, f"{label}.{role}[{item_index}]"
+                    )
+            else:
+                links = [
+                    parse_target_artifact(item, target, role, f"{label}.{role}[{item_index}]")
+                    for item_index, item in enumerate(items)
+                ]
+                if role in {
+                    "sourceFiles", "configFiles", "inputFiles", "modelFiles", "environmentFiles",
+                }:
+                    for item_index, link in enumerate(links):
+                        artifact_label = f"{label}.{role}[{item_index}]"
+                        _reject_internal_process_artifact(link, role, artifact_label)
+                        if role == "environmentFiles":
+                            _validate_environment_artifact(link, artifact_label)
+            target["roleLinks"][role] = links
         rerun_raw = raw_target.get("rerunArgv")
         target["rerunArgv"] = [] if rerun_raw is None else _parse_rerun(rerun_raw, f"{label}.rerunArgv")
+        entrypoint_raw = raw_target.get("entrypoint")
+        target["entrypoint"] = None if entrypoint_raw is None else _portable_delivery_path(
+            entrypoint_raw, f"{label}.entrypoint"
+        )
+        outputs_raw = raw_target.get("rerunOutputs")
+        if outputs_raw is None:
+            target["rerunOutputs"] = []
+        else:
+            require(isinstance(outputs_raw, list), f"{label}.rerunOutputs must be a list")
+            require(1 <= len(outputs_raw) <= 16, f"{label}.rerunOutputs must contain 1-16 paths")
+            target["rerunOutputs"] = [
+                _portable_delivery_path(item, f"{label}.rerunOutputs[{item_index}]")
+                for item_index, item in enumerate(outputs_raw)
+            ]
+            require(
+                len(set(target["rerunOutputs"])) == len(target["rerunOutputs"]),
+                f"{label}.rerunOutputs contains duplicates",
+            )
         if raw_target.get("dependencyNote") is not None:
             target["dependencyNote"] = _human_line(raw_target["dependencyNote"], f"{label}.dependencyNote", 500)
         require(
-            bool(target["rerunLinks"]) == bool(target["rerunArgv"]),
-            f"{target_id} must provide rerun files and exactly one rerun argv together",
+            bool(target["rerunArgv"]) == bool(target["entrypoint"]) == bool(target["rerunOutputs"]),
+            f"{target_id} must provide rerunArgv, entrypoint, and rerunOutputs together",
         )
-        if target["rerunLinks"]:
+        if target["rerunArgv"]:
             require(
                 bool(target["dependencyNote"]),
                 f"{target_id} executable target requires one concise dependencyNote",
@@ -1207,27 +1370,85 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
                 target["dependencyNote"] is None,
                 f"{target_id} may not declare dependencies without rerun files",
             )
+
+        successful_scientific = (
+            target["kind"] in {"quantitative", "other"}
+            and target["operationalStatus"] in {"complete", "partial"}
+            and target["route"] != "original-case-blocked"
+        )
+        if successful_scientific:
+            require(
+                bool(target["roleLinks"]["sourceFiles"]),
+                f"{target_id} completed scientific work requires final sourceFiles",
+            )
+            require(
+                bool(target["rerunArgv"]),
+                f"{target_id} completed scientific work requires a runnable final entrypoint",
+            )
+        successful_reconstruction = (
+            target["kind"] in {"image-derived", "semantic-diagram"}
+            and target["operationalStatus"] in {"complete", "partial"}
+            and target["mainLink"] is not None
+        )
+        if successful_reconstruction and not target["rerunArgv"]:
+            require(
+                target["mainLink"].destination.suffix.casefold() in EDITABLE_RESULT_SUFFIXES,
+                f"{target_id} reconstruction without sourceFiles must deliver an editable main result",
+            )
         _validate_rerun_paths(target)
         targets.append(target)
 
-    referenced_shared = {shared_ref.casefold() for _, _, shared_ref, _ in pending_refs}
+    if len(targets) == 1:
+        only_target = targets[0]
+        has_durable_artifact = only_target["mainLink"] is not None or any(
+            only_target["roleLinks"][role] for role in DELIVERY_ROLE_FIELDS
+        )
+        require(
+            has_durable_artifact,
+            "single-target work with no durable result or production material should be returned in chat",
+        )
+
+    referenced_common = {shared_ref.casefold() for _, _, shared_ref, _ in pending_refs}
+    common_target_refs: Dict[str, set[str]] = {}
     for target, field, shared_ref, _display in pending_refs:
-        shared_artifact = shared_names.get(shared_ref.casefold())
-        require(shared_artifact is not None, f"{target['id']} {field} references missing shared artifact: {shared_ref}")
+        shared_artifact = common_names.get(shared_ref.casefold())
+        require(shared_artifact is not None, f"{target['id']} {field} references missing common artifact: {shared_ref}")
         require(
             shared_ref == shared_artifact.destination.name,
-            f"{target['id']} {field} must match shared artifact case exactly: {shared_artifact.destination.name}",
+            f"{target['id']} {field} must match common artifact case exactly: {shared_artifact.destination.name}",
         )
-    unused_shared = sorted(
+        common_target_refs.setdefault(shared_ref.casefold(), set()).add(target["id"])
+    unused_common = sorted(
         artifact.destination.name
-        for key, artifact in shared_names.items()
-        if key not in referenced_shared
+        for key, artifact in common_names.items()
+        if key not in referenced_common
     )
     require(
-        not unused_shared,
-        "top-level shared artifacts must be referenced by at least one target: "
-        + ", ".join(unused_shared),
+        not unused_common,
+        "top-level common artifacts must be referenced by at least one target: "
+        + ", ".join(unused_common),
     )
+    underused_common = sorted(
+        artifact.destination.name
+        for key, artifact in common_names.items()
+        if len(common_target_refs.get(key, set())) < 2
+    )
+    require(
+        not underused_common,
+        "common artifacts must be used by at least two distinct targets: "
+        + ", ".join(underused_common),
+    )
+
+    if licenses:
+        license_destinations = {item.destination.as_posix() for item in licenses}
+        has_third_party_material = any(
+            item.destination.as_posix() not in license_destinations and item.rights != "generated"
+            for item in copies
+        )
+        require(
+            has_third_party_material,
+            "LICENSES may be delivered only for included third-party material",
+        )
 
     require(len(copies) <= MAX_COPY_ARTIFACTS, "delivery contains too many copied artifacts")
     destinations: Dict[str, CopyArtifact] = {}
@@ -1239,7 +1460,7 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
         previous = digests.get(artifact.digest)
         require(
             previous is None,
-            "duplicate file content must use one canonical shared entry: "
+            "duplicate file content must use one canonical common entry: "
             f"{previous.destination if previous else ''} and {artifact.destination}",
         )
         digests[artifact.digest] = artifact
