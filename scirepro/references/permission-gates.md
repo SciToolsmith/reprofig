@@ -15,6 +15,7 @@ Proceed without pausing for:
 - a project-local open-source environment using up to 2 GiB of disk/cache without changing global packages;
 - reviewed, create-only local code expected to finish within 20 minutes, without GPU, payment, elevated privileges, or network after setup;
 - an already installed author-native runtime when use requires no login, activation, purchase, remote submission, uncertain shared license, or known uncontrolled startup effect;
+- a bounded noninteractive startup and prerequisite probe of that installed runtime when static review reveals no such gated effect;
 - create-only files inside one dedicated transient workspace;
 - assembly of one non-existing customer folder after useful results exist.
 
@@ -37,7 +38,7 @@ Ask before:
 
 Do not pause merely because a transparent non-critical assumption is needed, or because unavailable exact-original details require an honest switch to `mechanism-reproduction` or `alternative-validation` that still answers the user's stated objective. Proceed within the automatic bounds, disclose the changed evidence boundary, and ask only if the alternatives would answer materially different questions or support materially different claims.
 
-An installed proprietary runtime is not gated merely because it is proprietary. Determine whether bounded local use is already authorized; ask only when activation, shared licensing, remote submission, purchase, or uncertain startup effects matter.
+An installed proprietary runtime is not gated merely because it is proprietary. An as-yet unverified license is not by itself a reason to ask or to switch engines: first determine whether there is actual evidence of login, activation, shared/floating licensing, remote submission, purchase, or an uncontrolled startup effect. When none is present, run the bounded noninteractive probe automatically. When genuine authority is required, do not launch; ask if native execution versus a substitute would change the question or supported claim. Never cite `detected but untested` as evidence that a primary port was necessary.
 
 ## Pinned diagram companion exception
 

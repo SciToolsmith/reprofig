@@ -51,7 +51,7 @@ Confirm target → understand the scientific observable → trace the relevant g
 → one customer folder
 ```
 
-- Author-native code, data formats, and runtimes are preferred when they best preserve evidence for the objective. An independent derivation, port, or cross-check may be the right route; every substitution is explicit.
+- SciRepro first determines whether author-native code actually participates in the target-producing stage. When it does, native execution would change the evidence level, and a local runtime is detected, the Skill first performs a bounded startup, license/dependency-prerequisite, and minimal native-run check. `Detected but untested` is not a reason to port. A declared port becomes primary only after installation, license, or required capability is confirmed unavailable, or when portability or independent validation is itself the objective.
 - Missingness alone does not trigger network discovery. SciRepro uses the paper, target, and supplied materials first; it searches only for unresolved facts that can change the route, conclusion, safety, material cost, or deliverable, and cancels obsolete searches after each material result.
 - Safe, create-only, bounded local work proceeds without a pre-execution webpage or approval ceremony. Login, payment, restricted resources, upload, overwrite, publication, or a material scientific choice still requires the user.
 - The first scientifically useful V0 is produced and preserved early. Investigation expands to another search branch, delegation, broad probe, or scientific run only when it can resolve a named unknown that changes a decision.
@@ -68,12 +68,12 @@ A missing companion Skill may be deployed only from a pinned public commit withi
 
 When persistent work exists, SciRepro assembles one concise customer folder from a transient internal workspace. It contains:
 
-- a start document that leads with the scientific outcome and then its limits;
-- the primary figure or editable artifact for each target, plus only necessary comparison and validation evidence;
-- the code, configuration, command, and actual dependencies needed to rerun the selected work;
-- material assumptions, substitutions, negative results, remaining discrepancies, and rights boundaries.
+- a short start document leading with the scientific outcome, limits, and rerun command;
+- the primary figure or editable artifact for each target;
+- only code, configuration, irreplaceable inputs, dependencies, and licenses needed for an honest rerun; and
+- reference images, numeric data, or comparisons only when explicitly requested, needed downstream, or independently material to the conclusion.
 
-Raw search history, debugging logs, QA overlays, internal manifests, broad machine inventories, and irrelevant intermediate versions are not customer deliverables. Material facts are summarized and required evidence is promoted into purpose-built files.
+Validation JSON, runtime/license probe records, iteration traces, sensitivity details, regenerated CSV files, raw search history, debugging logs, QA overlays, internal manifests, broad machine inventories, and irrelevant intermediate versions stay in the transient workspace by default. Material facts are summarized directly in the README. A single-target delivery no longer repeats internal route and three-status tables.
 
 ## License
 

@@ -65,10 +65,19 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def artifact(source: str, name: str, *, rights: str = "generated", label: str | None = None) -> dict:
+def artifact(
+    source: str,
+    name: str,
+    *,
+    rights: str = "generated",
+    label: str | None = None,
+    purpose: str | None = None,
+) -> dict:
     value = {"source": source, "name": name, "rights": rights}
     if label is not None:
         value["label"] = label
+    if purpose is not None:
+        value["purpose"] = purpose
     return value
 
 
@@ -277,7 +286,6 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
                 target_sha256=target["targetSha256"],
                 target_caption=target["caption"],
             )
-            evidence_path = transient / "work" / "observables.json"
             # Internal-only material proves assembly is a whitelist, not a tree copy.
             (transient / "tmp").mkdir()
             (transient / "tmp" / "intermediate.txt").write_text("discard me\n", encoding="utf-8")
@@ -287,7 +295,7 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
             plan_path = transient / "delivery-plan.json"
             reference_source = (targets / target["normalizedPath"]).relative_to(transient).as_posix()
             plan = {
-                "schemaVersion": "scirepro.delivery-plan/v2",
+                "schemaVersion": "scirepro.delivery-plan/v3",
                 "title": "Generic linear-response reproduction",
                 "slug": "generic-linear",
                 "distribution": "local-private",
@@ -303,6 +311,16 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
                         "validationStatus": "passed",
                         "claimStatus": "supported",
                         "route": "direct-recompute",
+                        "stageDecisions": [{
+                            "stage": "method",
+                            "materialToClaim": True,
+                            "authorNative": None,
+                            "selected": "python",
+                            "nativeCapability": "not-applicable",
+                            "selectionBasis": "no-author-native",
+                            "reason": "No target-relevant author-native implementation was supplied.",
+                            "evidenceBoundary": None,
+                        }],
                         "validationBasis": [
                             "Five raw points independently yielded slope 2 and intercept 1."
                         ],
@@ -315,19 +333,18 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
                             rights="local-only",
                             label="Acquired paper target",
                         ),
-                        "implementation": [artifact("work/reproduce.py", "reproduce.py")],
-                        "parameters": [
+                        "rerunFiles": [
+                            artifact("work/reproduce.py", "reproduce.py"),
                             artifact("work/config.json", "config.json"),
                             artifact("work/series.csv", "series.csv", label="Raw series"),
                         ],
-                        "evidence": [artifact("work/observables.json", "observables.json")],
-                        "dependencies": [],
+                        "supportingResults": [],
                         "dependencyNote": "Python standard library only.",
                         "rerunArgv": [
                             "python3",
-                            "figures/fig-01/reproduce.py",
+                            "reproduce.py",
                             "--config",
-                            "figures/fig-01/config.json",
+                            "config.json",
                         ],
                         "limitations": ["This fixture tests a declared deterministic model."],
                         "rights": "The generated fixture and output are local test artifacts.",
@@ -342,34 +359,32 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
             self.assertEqual([item.name for item in output_root.iterdir()], [delivery.name])
             self.assertEqual(
                 {item.name for item in delivery.iterdir()},
-                {"README.md", "figures"},
-            )
-            target_dir = delivery / "figures" / "fig-01"
-            self.assertEqual(
-                {item.name for item in target_dir.iterdir()},
                 {
+                    "README.md",
                     "config.json",
-                    "observables.json",
                     "reference.png",
                     "reproduce.py",
                     "result.svg",
                     "series.csv",
                 },
             )
+            target_dir = delivery
             for source, delivered_name in (
                 (code_path, "reproduce.py"),
                 (config_path, "config.json"),
                 (data_path, "series.csv"),
                 (result_path, "result.svg"),
-                (evidence_path, "observables.json"),
             ):
                 self.assertEqual(sha256(source), sha256(target_dir / delivered_name))
+            self.assertFalse((delivery / "observables.json").exists())
 
             readme = (delivery / "README.md").read_text(encoding="utf-8")
             self.assertIn("The declared linear response is reproduced", readme)
-            self.assertIn("`direct-recompute`", readme)
+            self.assertIn("original/official case recomputation", readme)
+            self.assertNotIn("`direct-recompute`", readme)
+            self.assertNotIn("| Target | Result | Outcome |", readme)
             self.assertIn("Five raw points independently yielded slope 2 and intercept 1.", readme)
-            self.assertIn("python3 figures/fig-01/reproduce.py --config figures/fig-01/config.json", readme)
+            self.assertIn("python3 reproduce.py --config config.json", readme)
             self.assertNotIn(str(root), readme)
             assert_customer_links(self, delivery)
             assert_no_internal_artifacts(self, delivery)
@@ -402,7 +417,7 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
             write_json(
                 plan_path,
                 {
-                    "schemaVersion": "scirepro.delivery-plan/v2",
+                    "schemaVersion": "scirepro.delivery-plan/v3",
                     "title": "Mixed figure reproduction",
                     "slug": "mixed-figures",
                     "distribution": "local-private",
@@ -416,14 +431,13 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
                             "validationStatus": "passed",
                             "claimStatus": "not-applicable",
                             "route": "image-derived-reconstruction",
+                            "stageDecisions": [],
                             "validationBasis": ["The visible decreasing geometry was checked."],
                             "materialAssumptions": ["The fixture uses arbitrary axis scaling."],
                             "conclusion": "The declared trend is present.",
                             "mainResult": artifact("work/curve.svg", "result.svg"),
-                            "implementation": [],
-                            "parameters": [],
-                            "evidence": [],
-                            "dependencies": [],
+                            "rerunFiles": [],
+                            "supportingResults": [],
                             "limitations": [],
                             "rights": "Generated fixture.",
                         },
@@ -435,23 +449,30 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
                             "validationStatus": "passed",
                             "claimStatus": "not-applicable",
                             "route": "semantic-diagram-handoff",
+                            "stageDecisions": [],
                             "validationBasis": [
                                 "The editable package structure and PNG preview were checked."
                             ],
                             "materialAssumptions": [],
                             "conclusion": "The editable topology and preview are delivered.",
                             "mainResult": artifact("work/editable.pptx", "editable.pptx"),
-                            "implementation": [],
-                            "parameters": [],
-                            "evidence": [artifact("work/preview.png", "preview.png")],
-                            "dependencies": [],
+                            "rerunFiles": [],
+                            "supportingResults": [
+                                artifact(
+                                    "work/preview.png",
+                                    "preview.png",
+                                    purpose="requested-output",
+                                )
+                            ],
                             "limitations": [],
                             "rights": "Generated fixture.",
                         },
                     ],
                 },
             )
-            delivery = run_assembler(plan_path, root / "customer")
+            output_root = root / "customer"
+            delivery = run_assembler(plan_path, output_root)
+            self.assertEqual([item.name for item in output_root.iterdir()], [delivery.name])
             self.assertEqual(
                 {path.name for path in (delivery / "figures").iterdir()},
                 {"fig-01", "fig-02"},
@@ -462,13 +483,15 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
             )
             self.assertFalse(any(path.name == "build.mjs" for path in delivery.rglob("*")))
             readme = (delivery / "README.md").read_text(encoding="utf-8")
-            self.assertIn("`image-derived`", readme)
-            self.assertIn("`semantic-diagram`", readme)
-            self.assertIn("`image-derived-reconstruction`", readme)
-            self.assertIn("`semantic-diagram-handoff`", readme)
+            self.assertIn("image-derived reconstruction", readme)
+            self.assertIn("editable schematic reconstruction", readme)
+            self.assertNotIn("`image-derived`", readme)
+            self.assertNotIn("`semantic-diagram`", readme)
+            self.assertNotIn("`image-derived-reconstruction`", readme)
+            self.assertNotIn("`semantic-diagram-handoff`", readme)
             self.assertIn("The visible decreasing geometry was checked.", readme)
             self.assertIn("The fixture uses arbitrary axis scaling.", readme)
-            self.assertIn("`not-applicable`", readme)
+            self.assertNotIn("`not-applicable`", readme)
             assert_customer_links(self, delivery)
             assert_no_internal_artifacts(self, delivery)
 
@@ -526,7 +549,7 @@ class MechanismAssumptionE2ETests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            command = ["python3", "figures/fig-01/reproduce.py", "--config", "figures/fig-01/config.json"]
+            command = ["python3", "reproduce.py", "--config", "config.json"]
             initial = subprocess.run(
                 [sys.executable, str(work / "reproduce.py"), "--config", str(work / "config.json")],
                 cwd=root,
@@ -542,7 +565,7 @@ class MechanismAssumptionE2ETests(unittest.TestCase):
             write_json(
                 plan_path,
                 {
-                    "schemaVersion": "scirepro.delivery-plan/v2",
+                    "schemaVersion": "scirepro.delivery-plan/v3",
                     "title": "Generic saturating-response mechanism reproduction",
                     "slug": "generic-mechanism",
                     "distribution": "shareable",
@@ -556,6 +579,16 @@ class MechanismAssumptionE2ETests(unittest.TestCase):
                             "validationStatus": "passed",
                             "claimStatus": "supported",
                             "route": "mechanism-reproduction",
+                            "stageDecisions": [{
+                                "stage": "method",
+                                "materialToClaim": True,
+                                "authorNative": None,
+                                "selected": "python",
+                                "nativeCapability": "not-applicable",
+                                "selectionBasis": "no-author-native",
+                                "reason": "No target-relevant author-native implementation was supplied.",
+                                "evidenceBoundary": None,
+                            }],
                             "validationBasis": [
                                 "All consecutive responses increase and remain below the declared asymptote."
                             ],
@@ -564,10 +597,11 @@ class MechanismAssumptionE2ETests(unittest.TestCase):
                             ],
                             "conclusion": "The narrow monotonic-saturation claim passes without pointwise replay.",
                             "mainResult": artifact("work/result.svg", "result.svg"),
-                            "implementation": [artifact("work/reproduce.py", "reproduce.py")],
-                            "parameters": [artifact("work/config.json", "config.json")],
-                            "evidence": [artifact("work/observables.json", "observables.json")],
-                            "dependencies": [],
+                            "rerunFiles": [
+                                artifact("work/reproduce.py", "reproduce.py"),
+                                artifact("work/config.json", "config.json"),
+                            ],
+                            "supportingResults": [],
                             "dependencyNote": "Python standard library only.",
                             "rerunArgv": command,
                             "limitations": ["The unpublished original trace was not treated as an acceptance target."],
@@ -578,14 +612,16 @@ class MechanismAssumptionE2ETests(unittest.TestCase):
             )
             delivery = run_assembler(plan_path, root / "customer")
             readme = (delivery / "README.md").read_text(encoding="utf-8")
-            self.assertIn("`mechanism-reproduction`", readme)
+            self.assertIn("mechanism-level reproduction", readme)
+            self.assertNotIn("`mechanism-reproduction`", readme)
             self.assertIn("time constant is fixed at 2.0", readme)
             self.assertIn("All consecutive responses increase", readme)
+            self.assertFalse((delivery / "observables.json").exists())
             self.assertFalse(any("sensitivity" in path.name.casefold() for path in delivery.rglob("*")))
-            before = sha256(delivery / "figures/fig-01/result.svg")
+            before = sha256(delivery / "result.svg")
             rerun = subprocess.run(command, cwd=delivery, text=True, capture_output=True)
             self.assertEqual(rerun.returncode, 0, rerun.stderr)
-            self.assertEqual(sha256(delivery / "figures/fig-01/result.svg"), before)
+            self.assertEqual(sha256(delivery / "result.svg"), before)
             assert_customer_links(self, delivery)
             assert_no_internal_artifacts(self, delivery)
 

@@ -192,6 +192,104 @@ class ScientificJudgmentContractTests(unittest.TestCase):
             "transparent assumptions must not be mislabeled as direct recomputation",
         )
 
+    def test_target_relevant_native_capability_is_resolved_before_a_primary_port(self) -> None:
+        policy = read(
+            "SKILL.md",
+            "references/source-environment-audit.md",
+            "references/permission-gates.md",
+        )
+
+        self.assertRegex(
+            policy,
+            nearby(
+                r"target[- ]relevant author[- ]native (?:code|artifact|method|route)",
+                r"(?:before|prior to).{0,120}(?:primary port|making a port|switch(?:ing)? (?:engines|languages))",
+                560,
+            ),
+        )
+        self.assertRegex(
+            policy,
+            nearby(
+                r"detected but untested|installed[- ]but[- ]untested",
+                r"(?:not|neither).{0,100}(?:unavailable|missing|unlicensed|fallback reason)",
+                360,
+            ),
+            "an untested native runtime must trigger resolution, not justify a silent port",
+        )
+        self.assertRegex(
+            policy,
+            r"(?is)(?:static|statically).{0,180}(?:startup|live).{0,120}(?:license|prerequisite).{0,220}(?:smoke test|target[- ]relevant operation)",
+        )
+        self.assertRegex(
+            policy,
+            nearby(
+                r"(?:portability|independent (?:implementation|method))",
+                r"(?:port|substitut|python).{0,100}(?:primary|objective)",
+                420,
+            ),
+        )
+        self.assertRegex(
+            policy,
+            nearby(
+                r"(?:missing|unavailable|inconclusive).{0,100}(?:native runtime|native route|runtime)",
+                r"(?:declared|transparent).{0,100}(?:substitut|mechanism|alternative|port)",
+                640,
+            ),
+        )
+
+    def test_license_uncertainty_is_neither_a_silent_fallback_nor_a_ceremonial_gate(self) -> None:
+        gates = read("references/permission-gates.md", "references/source-environment-audit.md")
+
+        self.assertRegex(
+            gates,
+            nearby(
+                r"(?:unverified|unknown).{0,80}license",
+                r"(?:not|neither).{0,100}(?:reason to ask|reason to switch|fallback reason|unavailable)",
+                420,
+            ),
+        )
+        self.assertRegex(
+            gates,
+            r"(?is)(?:when none is present|no such gated effect).{0,180}(?:run|perform).{0,100}bounded noninteractive.{0,100}(?:probe).{0,80}(?:automatically)?|"
+            r"(?:automatic work|proceed without pausing).{0,900}bounded noninteractive (?:startup and )?prerequisite probe",
+        )
+        self.assertRegex(
+            gates,
+            nearby(
+                r"genuine authority|login|activation|shared/floating|remote submission|purchase",
+                r"ask|do not launch",
+                520,
+            ),
+        )
+
+    def test_runtime_prerequisites_are_not_mislabeled_as_route_verification(self) -> None:
+        audit = read("references/source-environment-audit.md")
+
+        self.assertRegex(
+            audit,
+            nearby(
+                r"prerequisites[- ]present",
+                r"(?:target route itself was not run|not.{0,100}route verified|before calling the route verified)",
+                420,
+            ),
+        )
+        self.assertRegex(
+            audit,
+            nearby(
+                r"(?:toolbox|package).{0,80}(?:installation|installed|visibility)|license feature",
+                r"(?:does not|not).{0,120}(?:operation|author route|route).{0,80}runs?",
+                520,
+            ),
+        )
+        self.assertRegex(
+            audit,
+            nearby(
+                r"verified",
+                r"(?:target[- ]relevant operation|entrypoint smoke test).{0,100}(?:ran|success)",
+                360,
+            ),
+        )
+
     def test_image_only_assumptions_never_invent_hidden_science(self) -> None:
         image_only = read("references/image-derived-reconstruction.md")
 

@@ -20,6 +20,7 @@ import shlex
 import shutil
 import stat
 import sys
+import tarfile
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 
-PLAN_SCHEMA = "scirepro.delivery-plan/v2"
+PLAN_SCHEMA = "scirepro.delivery-plan/v3"
 MAX_PLAN_BYTES = 1024 * 1024
 MAX_FILE_BYTES = 256 * 1024 * 1024
 MAX_TOTAL_BYTES = 1024 * 1024 * 1024
@@ -58,9 +59,26 @@ RIGHTS_STATUSES = {
     "generated", "included-permitted", "public-domain", "local-only",
 }
 SHAREABLE_RIGHTS = {"generated", "included-permitted", "public-domain"}
+SUPPORTING_PURPOSES = {"requested-output", "downstream-use", "material-comparison"}
+RERUN_PATH_SUFFIXES = {
+    ".bash", ".cfg", ".csv", ".h5", ".hdf5", ".ini", ".ipynb", ".jl",
+    ".js", ".json", ".m", ".mat", ".mjs", ".mlx", ".npy", ".npz", ".p",
+    ".parquet", ".py", ".r", ".sh", ".slx", ".toml", ".tsv", ".txt",
+    ".yaml", ".yml",
+}
+PIPELINE_STAGES = {"input", "preprocessing", "method", "aggregation", "visualization"}
+NATIVE_CAPABILITIES = {
+    "not-applicable", "missing", "available-untested", "prerequisites-present",
+    "verified", "authority-required", "unavailable", "inconclusive",
+}
+ENGINE_SELECTION_BASES = {
+    "no-author-native", "author-native",
+    "objective-portability", "objective-independent", "declared-fallback",
+}
 
 SLUG = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 TARGET_ID = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
+ENGINE_ID = re.compile(r"^[a-z][a-z0-9+._-]{0,63}$")
 OUTPUT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 SENSITIVE_NAME = re.compile(
     r"(?i)^(?:\.env(?:\..*)?|id_[rd]sa(?:\.pub)?|credentials?(?:\..*)?|"
@@ -84,16 +102,28 @@ SENSITIVE_ARG = re.compile(
 )
 WINDOWS_ABSOLUTE = re.compile(r"(?i)(?:^|[=,;:\s'\"(@])(?:[A-Z]:[\\/]|\\\\)")
 LOCAL_ABSOLUTE = re.compile(r"(?:^|[=,;:\s'\"(@])/(?!/)")
+PROSE_LOCAL_ABSOLUTE = re.compile(r"(?:^|[=,;:\s'\"(@])/(?!/)(?=[A-Za-z0-9._-])")
 LOCAL_TILDE = re.compile(r"(?:^|[=,;:\s'\"(@])~(?:[/\\]|$)")
 PRIVATE_PATH = re.compile(
     r"(?i)(?:/Users/[^/\s]+|/home/[^/\s]+|[A-Z]:[\\/]+Users[\\/]+[^\\/\s]+)"
 )
+FILE_URI = re.compile(r"(?i)(?:^|[=,;:\s'\"(@])file:/")
 RESERVED_NAMES = {".ds_store", "desktop.ini", "thumbs.db", "readme.md", "manifest.json"}
 WINDOWS_DEVICE = re.compile(r"(?i)^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)")
-ARCHIVE_TEXT_SUFFIXES = {
-    ".cfg", ".csv", ".html", ".htm", ".ini", ".js", ".json", ".md", ".mjs",
-    ".properties", ".py", ".r", ".rels", ".tex", ".txt", ".xml", ".yaml", ".yml",
+UNSUPPORTED_ARCHIVE_SUFFIXES = {
+    ".7z", ".bz2", ".cab", ".gz", ".lz", ".lz4", ".lzma", ".rar", ".xz", ".z", ".zst",
 }
+NESTED_ARCHIVE_SUFFIXES = UNSUPPORTED_ARCHIVE_SUFFIXES | {
+    ".tar", ".tbz", ".tbz2", ".tgz", ".txz", ".zip",
+}
+COMPRESSED_MAGIC = (
+    b"\x1f\x8b",       # gzip
+    b"BZh",             # bzip2
+    b"\xfd7zXZ\x00",  # xz
+    b"7z\xbc\xaf'\x1c",  # 7z
+    b"Rar!\x1a\x07",   # rar
+    b"\x28\xb5\x2f\xfd",  # zstd
+)
 
 
 class DeliveryError(ValueError):
@@ -119,6 +149,7 @@ class CopyArtifact:
 class ArtifactLink:
     destination: Path
     label: str
+    purpose: Optional[str] = None
 
 
 def _single_line(value: object, label: str, limit: int = 2000) -> str:
@@ -133,12 +164,6 @@ def _single_line(value: object, label: str, limit: int = 2000) -> str:
     return value
 
 
-def _list_of_lines(value: object, label: str) -> List[str]:
-    require(isinstance(value, list), f"{label} must be a list")
-    require(len(value) <= 100, f"{label} contains too many entries")
-    return [_human_line(item, f"{label}[{index}]") for index, item in enumerate(value)]
-
-
 def _concise_list(value: object, label: str) -> List[str]:
     require(isinstance(value, list), f"{label} must be a list")
     require(len(value) <= 12, f"{label} contains too many entries")
@@ -150,6 +175,10 @@ def _concise_list(value: object, label: str) -> List[str]:
 
 def _human_line(value: object, label: str, limit: int = 2000) -> str:
     text = _single_line(value, label, limit)
+    require(FILE_URI.search(text) is None, f"{label} contains a local path")
+    require(PROSE_LOCAL_ABSOLUTE.search(text) is None, f"{label} contains a local absolute path")
+    require(LOCAL_TILDE.search(text) is None, f"{label} contains a local path")
+    require(WINDOWS_ABSOLUTE.search(text) is None, f"{label} contains a local absolute path")
     require(PRIVATE_PATH.search(text) is None, f"{label} contains a private absolute path")
     return text
 
@@ -192,8 +221,17 @@ def _secret_match(text: str) -> Optional[str]:
     return None
 
 
-def _scan_secret_stream(handle: object, label: str, digest: Optional[object] = None) -> None:
-    overlap = b""
+def _scan_secret_stream(
+    handle: object,
+    label: str,
+    digest: Optional[object] = None,
+    initial: bytes = b"",
+) -> None:
+    if digest is not None and initial:
+        digest.update(initial)
+    match = _secret_match(initial.decode("utf-8", errors="ignore"))
+    require(match is None, f"{label} contains secret-shaped text ({match})")
+    overlap = initial[-1024:]
     for block in iter(lambda: handle.read(1024 * 1024), b""):
         if digest is not None:
             digest.update(block)
@@ -203,9 +241,40 @@ def _scan_secret_stream(handle: object, label: str, digest: Optional[object] = N
         overlap = combined[-1024:]
 
 
-def _scan_archive(path: Path, label: str) -> None:
-    if not zipfile.is_zipfile(path):
-        return
+def _scan_archive_member_stream(handle: object, member_name: str, label: str) -> None:
+    head = handle.read(512)
+    suffixes = {suffix.casefold() for suffix in Path(member_name).suffixes}
+    nested = (
+        bool(suffixes & NESTED_ARCHIVE_SUFFIXES)
+        or head.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"))
+        or any(head.startswith(prefix) for prefix in COMPRESSED_MAGIC)
+        or (len(head) >= 262 and head[257:262] == b"ustar")
+    )
+    require(not nested, f"{label} contains a nested compressed package")
+    _scan_secret_stream(handle, label, initial=head)
+
+
+def _archive_member_key(name: str, label: str) -> str:
+    """Validate one archive member path and return a normalized collision key."""
+    require(bool(name), f"{label} has an empty member name")
+    require("\\" not in name, f"{label} contains a backslash path")
+    require(not name.startswith("/"), f"{label} contains an absolute path")
+    require(re.match(r"(?i)^[A-Z]:", name) is None, f"{label} contains a drive path")
+    parts = tuple(part for part in name.split("/") if part not in {"", "."})
+    require(parts and ".." not in parts, f"{label} traverses outside the package")
+    normalized = "/".join(parts)
+    match = _secret_match(normalized)
+    require(match is None, f"{label} contains secret-shaped text ({match})")
+    require(PRIVATE_PATH.search(normalized) is None, f"{label} contains a private path")
+    basename = parts[-1]
+    require(
+        SENSITIVE_NAME.fullmatch(basename) is None,
+        f"{label} has a sensitive member name: {basename}",
+    )
+    return normalized.casefold()
+
+
+def _scan_zip_archive(path: Path, label: str) -> None:
     try:
         with zipfile.ZipFile(path) as archive:
             members = archive.infolist()
@@ -215,20 +284,77 @@ def _scan_archive(path: Path, label: str) -> None:
                 expanded <= MAX_ARCHIVE_EXPANDED_BYTES,
                 f"{label} archive exceeds the expanded scan limit",
             )
+            seen: set[str] = set()
             for item in members:
+                member_label = f"{label} archive member {item.filename!r}"
+                key = _archive_member_key(item.filename, member_label)
+                require(key not in seen, f"{label} archive has duplicate normalized member: {item.filename}")
+                seen.add(key)
+                require(not (item.flag_bits & 0x1), f"{label} archive contains encrypted content")
+                unix_mode = (item.external_attr >> 16) & 0xFFFF
+                unix_type = stat.S_IFMT(unix_mode)
+                require(unix_type != stat.S_IFLNK, f"{member_label} is a symlink")
                 if item.is_dir():
                     continue
-                require(not (item.flag_bits & 0x1), f"{label} archive contains encrypted content")
-                member_label = f"{label} archive member {item.filename!r}"
-                match = _secret_match(item.filename)
-                require(match is None, f"{member_label} contains secret-shaped text ({match})")
-                suffix = Path(item.filename).suffix.casefold()
-                if suffix not in ARCHIVE_TEXT_SUFFIXES:
-                    continue
+                require(
+                    unix_type in {0, stat.S_IFREG},
+                    f"{member_label} is not a regular file",
+                )
                 with archive.open(item, "r") as member:
-                    _scan_secret_stream(member, member_label)
-    except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
+                    _scan_archive_member_stream(member, item.filename, member_label)
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, NotImplementedError, RuntimeError, OSError) as exc:
         raise DeliveryError(f"{label} compressed package could not be safely inspected") from exc
+
+
+def _scan_tar_archive(path: Path, label: str) -> bool:
+    try:
+        archive = tarfile.open(path, mode="r:*")
+    except (tarfile.TarError, EOFError, OSError):
+        return False
+    try:
+        with archive:
+            members = archive.getmembers()
+            require(len(members) <= MAX_ARCHIVE_MEMBERS, f"{label} archive contains too many members")
+            expanded = sum(item.size for item in members if item.isfile())
+            require(
+                expanded <= MAX_ARCHIVE_EXPANDED_BYTES,
+                f"{label} archive exceeds the expanded scan limit",
+            )
+            seen: set[str] = set()
+            for item in members:
+                member_label = f"{label} archive member {item.name!r}"
+                key = _archive_member_key(item.name, member_label)
+                require(key not in seen, f"{label} archive has duplicate normalized member: {item.name}")
+                seen.add(key)
+                require(not (item.issym() or item.islnk()), f"{member_label} is a link")
+                if item.isdir():
+                    continue
+                require(item.isfile(), f"{member_label} is not a regular file")
+                member = archive.extractfile(item)
+                require(member is not None, f"{member_label} could not be read")
+                with member:
+                    _scan_archive_member_stream(member, item.name, member_label)
+    except (tarfile.TarError, EOFError, RuntimeError, OSError) as exc:
+        raise DeliveryError(f"{label} compressed package could not be safely inspected") from exc
+    return True
+
+
+def _scan_archive(path: Path, label: str) -> None:
+    if zipfile.is_zipfile(path):
+        _scan_zip_archive(path, label)
+        return
+    if _scan_tar_archive(path, label):
+        return
+    suffixes = {suffix.casefold() for suffix in path.suffixes}
+    with path.open("rb") as handle:
+        magic = handle.read(8)
+    archive_like = bool(suffixes & UNSUPPORTED_ARCHIVE_SUFFIXES) or any(
+        magic.startswith(prefix) for prefix in COMPRESSED_MAGIC
+    )
+    require(
+        not archive_like,
+        f"{label} uses an unsupported compressed package format",
+    )
 
 
 def _inspect_file(path: Path, label: str) -> str:
@@ -333,6 +459,28 @@ def _parse_link(
     return artifact, None, artifact.label
 
 
+def _parse_supporting_link(
+    value: object,
+    *,
+    plan_path: Path,
+    destination_parent: Path,
+    label: str,
+    distribution: str,
+) -> Tuple[Optional[CopyArtifact], Optional[str], str, str]:
+    require(isinstance(value, dict), f"{label} must be an object")
+    purpose = _single_line(value.get("purpose"), f"{label}.purpose", 64)
+    require(purpose in SUPPORTING_PURPOSES, f"unsupported customer purpose for {label}: {purpose}")
+    artifact_value = {key: item for key, item in value.items() if key != "purpose"}
+    artifact, shared_ref, display = _parse_link(
+        artifact_value,
+        plan_path=plan_path,
+        destination_parent=destination_parent,
+        label=label,
+        distribution=distribution,
+    )
+    return artifact, shared_ref, display, purpose
+
+
 def _parse_rerun(value: object, label: str) -> List[str]:
     require(isinstance(value, list), f"{label} must be a list")
     require(0 < len(value) <= 64, f"{label} must contain 1-64 arguments")
@@ -356,6 +504,49 @@ def _parse_rerun(value: object, label: str) -> List[str]:
     return argv
 
 
+def _validate_rerun_paths(target: dict) -> None:
+    """Reject obvious rerun file arguments that are absent from the delivery whitelist."""
+    argv = target["rerunArgv"]
+    if not argv:
+        return
+    links = [
+        *target["rerunLinks"],
+        *target["supportingLinks"],
+    ]
+    if target["mainLink"] is not None:
+        links.append(target["mainLink"])
+    if target["referenceLink"] is not None:
+        links.append(target["referenceLink"])
+    allowed = {link.destination.as_posix() for link in links}
+    skip_next_expression = False
+    for index, argument in enumerate(argv):
+        if skip_next_expression:
+            skip_next_expression = False
+            continue
+        if argument in {"-c", "-e", "--eval", "-batch"}:
+            skip_next_expression = True
+            continue
+        candidate = argument.split("=", 1)[1] if argument.startswith("-") and "=" in argument else argument
+        if not candidate or candidate.startswith("-") or "://" in candidate:
+            continue
+        normalized = candidate.replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        suffix = Path(normalized).suffix.casefold()
+        generic_suffix = re.fullmatch(r"\.[a-z][a-z0-9_-]{0,31}", suffix) is not None
+        looks_like_path = (
+            "/" in normalized
+            or suffix in RERUN_PATH_SUFFIXES
+            or generic_suffix
+            or SENSITIVE_NAME.fullmatch(Path(normalized).name) is not None
+        )
+        if looks_like_path:
+            require(
+                normalized in allowed,
+                f"{target['id']} rerunArgv[{index}] references a file absent from the delivery: {candidate}",
+            )
+
+
 def _markdown(value: str) -> str:
     escaped = html.escape(value, quote=False).replace("\\", "\\\\")
     return escaped.replace("[", "\\[").replace("]", "\\]").replace("|", "\\|")
@@ -365,95 +556,153 @@ def _link_text(link: ArtifactLink) -> str:
     return f"[{_markdown(link.label)}]({link.destination.as_posix()})"
 
 
-def _artifact_list(label: str, links: Sequence[ArtifactLink]) -> Optional[str]:
-    if not links:
-        return None
-    return f"- **{label}:** " + ", ".join(_link_text(link) for link in links)
+def _route_label(route: str) -> str:
+    return {
+        "direct-recompute": "original/official case recomputation",
+        "mechanism-reproduction": "mechanism-level reproduction",
+        "alternative-validation": "alternative validation",
+        "image-derived-reconstruction": "image-derived reconstruction",
+        "original-case-blocked": "original case blocked",
+        "semantic-diagram-handoff": "editable schematic reconstruction",
+    }[route]
 
 
-def _inline_list(values: Sequence[str], empty: str) -> str:
-    if not values:
-        return empty
-    return "; ".join(_markdown(value) for value in values)
+def _engine_label(engine: str) -> str:
+    return {
+        "matlab": "MATLAB",
+        "python": "Python",
+        "r": "R",
+        "julia": "Julia",
+        "octave": "Octave",
+        "node": "Node.js",
+    }.get(engine, engine)
 
 
-def _build_readme(plan: dict, targets: List[dict], shared: List[CopyArtifact], licenses: List[CopyArtifact]) -> str:
+def _stage_label(stage: str) -> str:
+    return {
+        "input": "input",
+        "preprocessing": "preprocessing",
+        "method": "method",
+        "aggregation": "aggregation",
+        "visualization": "visualization",
+    }[stage]
+
+
+def _outcome_text(target: dict) -> str:
+    if target["kind"] in {"image-derived", "semantic-diagram"}:
+        return {
+            "passed": "The requested reconstruction was completed and passed its declared check.",
+            "partially-passed": "A useful reconstruction was produced, but some declared checks remain unmet.",
+            "failed": "The attempted reconstruction did not pass its declared check.",
+            "inconclusive": "The reconstruction was attempted, but the declared check was inconclusive.",
+            "not-run": "No defensible reconstruction was completed.",
+        }[target["validationStatus"]]
+    return {
+        "supported": "The tested scientific claim is supported within the stated scope.",
+        "partially-supported": "The tested scientific claim is partially supported within the stated scope.",
+        "unsupported": "A valid completed test did not support the tested scientific claim.",
+        "inconclusive": "The scientific test was attempted but remains inconclusive.",
+        "not-tested": "The scientific claim was not tested.",
+    }[target["claimStatus"]]
+
+
+def _deduplicated_lines(*groups: Sequence[str]) -> List[str]:
+    result: List[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for value in group:
+            key = value.casefold()
+            if key not in seen:
+                seen.add(key)
+                result.append(value)
+    return result
+
+
+def _build_readme(plan: dict, targets: List[dict], licenses: List[CopyArtifact]) -> str:
     lines = [
         f"# {_markdown(plan['title'])}",
         "",
         f"> {_markdown(plan['conclusion'])}",
-        "",
-        f"**Distribution:** `{plan['distribution']}`",
-        "",
-        "## Results",
-        "",
-        "| Target | Type | Route | Operational | Validation | Claim | Main result |",
-        "|---|---|---|---|---|---|---|",
     ]
-    for target in targets:
-        lines.append(
-            "| " + " | ".join((
-                f"`{target['id']}` — {_markdown(target['title'])}",
-                f"`{target['kind']}`",
-                f"`{target['route']}`",
-                f"`{target['operationalStatus']}`",
-                f"`{target['validationStatus']}`",
-                f"`{target['claimStatus']}`",
-                "No result" if target["mainLink"] is None else _link_text(target["mainLink"]),
-            )) + " |"
-        )
+
+    if len(targets) > 1:
+        lines.extend([
+            "",
+            "## Results",
+            "",
+            "| Target | Result | Outcome |",
+            "|---|---|---|",
+        ])
+        for target in targets:
+            lines.append(
+                "| " + " | ".join((
+                    f"`{target['id']}` — {_markdown(target['title'])}",
+                    "No result" if target["mainLink"] is None else _link_text(target["mainLink"]),
+                    _markdown(_outcome_text(target)),
+                )) + " |"
+            )
 
     for target in targets:
         lines.extend([
             "",
-            f"## `{target['id']}` — {_markdown(target['title'])}",
+            "## Result" if len(targets) == 1 else f"## `{target['id']}` — {_markdown(target['title'])}",
             "",
             _markdown(target["conclusion"]),
             "",
-            f"- **Route:** `{target['route']}`",
-            f"- **Operational:** `{target['operationalStatus']}`",
-            f"- **Validation:** `{target['validationStatus']}`",
-            f"- **Scientific claim:** `{target['claimStatus']}`",
-            "- **Validation basis:** "
-            + _inline_list(target["validationBasis"], "Not run."),
-            "- **Material assumptions:** "
-            + _inline_list(target["materialAssumptions"], "None declared."),
+            f"**Outcome:** {_markdown(_outcome_text(target))}",
+            "",
+            f"**Method:** {_markdown(_route_label(target['route']))}.",
         ])
+        material_substitutions = [
+            decision
+            for decision in target["stageDecisions"]
+            if decision["materialToClaim"]
+            and decision["authorNative"] is not None
+            and decision["selected"] != decision["authorNative"]
+        ]
+        if material_substitutions:
+            lines.extend(["", "### Implementation boundaries", ""])
+            for decision in material_substitutions:
+                summary = (
+                    f"{_stage_label(decision['stage']).capitalize()}: "
+                    f"{_engine_label(decision['selected'])} replaced author-native "
+                    f"{_engine_label(decision['authorNative'])}. "
+                    f"{decision['evidenceBoundary']} Reason: {decision['reason']}"
+                )
+                lines.append(f"- {_markdown(summary)}")
         if target["blocker"]:
-            lines.append(f"- **Blocker:** {_markdown(target['blocker'])}")
+            lines.extend(["", f"**Blocker:** {_markdown(target['blocker'])}"])
         if target["mainLink"] is None:
-            lines.append("- **Main result:** No result")
+            lines.extend(["", "**Main result:** No result"])
         else:
-            lines.append(f"- **Main result:** {_link_text(target['mainLink'])}")
+            lines.extend(["", f"**Main result:** {_link_text(target['mainLink'])}"])
         if target["kind"] == "image-derived":
             if target["mainLink"] is None:
-                lines.append(
-                    "- **Evidence boundary:** No image-derived reconstruction was produced; "
+                lines.extend(["", (
+                    "**Evidence boundary:** No image-derived reconstruction was produced; "
                     "the supplied pixels did not identify the information required for the requested result."
-                )
+                )])
             else:
-                lines.append(
-                    "- **Evidence boundary:** This reconstructs visible geometry, values, or appearance; "
+                lines.extend(["", (
+                    "**Evidence boundary:** This reconstructs visible geometry, values, or appearance; "
                     "it does not recover or validate the original data, method, experiment, or scientific conclusion."
-                )
+                )])
         elif target["kind"] == "semantic-diagram":
-            lines.append(
-                "- **Evidence boundary:** Validation concerns schematic fidelity and editability, "
+            lines.extend(["", (
+                "**Evidence boundary:** Validation concerns schematic fidelity and editability, "
                 "not support for a scientific claim."
-            )
+            )])
+        if target["validationBasis"]:
+            lines.extend(["", "### What was checked", ""])
+            lines.extend(f"- {_markdown(item)}" for item in target["validationBasis"])
         if target["referenceLink"] is not None:
-            lines.append(f"- **Reference:** {_link_text(target['referenceLink'])}")
-        for heading, key in (
-            ("Implementation", "implementationLinks"),
-            ("Parameters", "parameterLinks"),
-            ("Evidence", "evidenceLinks"),
-            ("Dependencies", "dependencyLinks"),
-        ):
-            rendered = _artifact_list(heading, target[key])
-            if rendered:
-                lines.append(rendered)
-        if target["dependencyNote"]:
-            lines.append(f"- **Dependency note:** {_markdown(target['dependencyNote'])}")
+            lines.extend(["", f"**Reference:** {_link_text(target['referenceLink'])}"])
+        if target["supportingLinks"]:
+            lines.extend(["", "### Supporting results", ""])
+            lines.extend(
+                f"- {_link_text(link)}"
+                for link in target["supportingLinks"]
+            )
         if target["rerunArgv"]:
             lines.extend([
                 "",
@@ -465,19 +714,19 @@ def _build_readme(plan: dict, targets: List[dict], shared: List[CopyArtifact], l
                 shlex.join(target["rerunArgv"]),
                 "```",
             ])
-        lines.extend(["", "### Limits", ""])
-        if target["limitations"]:
-            lines.extend(f"- {_markdown(item)}" for item in target["limitations"])
-        else:
-            lines.append("- None declared.")
+            if target["rerunLinks"]:
+                lines.append(
+                    "Re-run files: " + ", ".join(_link_text(link) for link in target["rerunLinks"]) + "."
+                )
+            lines.append(f"Dependencies: {_markdown(target['dependencyNote'])}")
+        assumptions_and_limits = _deduplicated_lines(
+            target["materialAssumptions"], target["limitations"]
+        )
+        if assumptions_and_limits:
+            lines.extend(["", "### Assumptions and limits", ""])
+            lines.extend(f"- {_markdown(item)}" for item in assumptions_and_limits)
         lines.extend(["", "### Rights", "", _markdown(target["rights"])])
 
-    if shared:
-        lines.extend(["", "## Shared files", ""])
-        lines.extend(
-            f"- [{_markdown(item.label)}]({item.destination.as_posix()}) — `{item.rights}`"
-            for item in shared
-        )
     if licenses:
         lines.extend(["", "## Licenses", ""])
         lines.extend(
@@ -625,6 +874,137 @@ def _validate_route(target: dict) -> None:
         )
 
 
+def _validate_stage_decisions(raw: object, target: dict, label: str) -> List[dict]:
+    scientific_execution = (
+        target["kind"] in {"quantitative", "other"}
+        and target["route"] != "original-case-blocked"
+    )
+    require(isinstance(raw, list), f"{label} must be a list")
+    require(len(raw) <= len(PIPELINE_STAGES), f"{label} contains too many stages")
+    if scientific_execution:
+        require(raw, f"{target['id']} scientific execution requires stageDecisions")
+    else:
+        require(not raw, f"{target['id']} may not declare execution stages without scientific execution")
+
+    decisions: List[dict] = []
+    seen: set[str] = set()
+    for index, value in enumerate(raw):
+        item_label = f"{label}[{index}]"
+        require(isinstance(value, dict), f"{item_label} must be an object")
+        _ensure_keys(
+            value,
+            {
+                "stage", "materialToClaim", "authorNative", "selected",
+                "nativeCapability", "selectionBasis", "reason", "evidenceBoundary",
+            },
+            {
+                "stage", "materialToClaim", "authorNative", "selected",
+                "nativeCapability", "selectionBasis", "reason", "evidenceBoundary",
+            },
+            item_label,
+        )
+        stage = _single_line(value["stage"], f"{item_label}.stage", 32)
+        require(stage in PIPELINE_STAGES, f"unsupported pipeline stage for {target['id']}: {stage}")
+        require(stage not in seen, f"{target['id']} has duplicate stage decision: {stage}")
+        seen.add(stage)
+        material = value["materialToClaim"]
+        require(isinstance(material, bool), f"{item_label}.materialToClaim must be a boolean")
+        selected = _single_line(value["selected"], f"{item_label}.selected", 64)
+        require(ENGINE_ID.fullmatch(selected) is not None, f"invalid selected engine: {selected}")
+        author_native = value["authorNative"]
+        if author_native is not None:
+            author_native = _single_line(author_native, f"{item_label}.authorNative", 64)
+            require(
+                ENGINE_ID.fullmatch(author_native) is not None,
+                f"invalid author-native engine: {author_native}",
+            )
+        capability = _single_line(value["nativeCapability"], f"{item_label}.nativeCapability", 40)
+        basis = _single_line(value["selectionBasis"], f"{item_label}.selectionBasis", 40)
+        reason = _human_line(value["reason"], f"{item_label}.reason", 500)
+        boundary_raw = value["evidenceBoundary"]
+        evidence_boundary = None
+        if boundary_raw is not None:
+            evidence_boundary = _human_line(
+                boundary_raw, f"{item_label}.evidenceBoundary", 500
+            )
+        require(
+            capability in NATIVE_CAPABILITIES,
+            f"unsupported native capability for {target['id']} {stage}: {capability}",
+        )
+        require(
+            basis in ENGINE_SELECTION_BASES,
+            f"unsupported engine selection basis for {target['id']} {stage}: {basis}",
+        )
+
+        substituted = author_native is not None and selected != author_native
+        if author_native is None:
+            require(
+                capability == "not-applicable",
+                f"{target['id']} {stage} without author-native evidence must use not-applicable capability",
+            )
+            require(
+                basis == "no-author-native",
+                f"{target['id']} {stage} without author-native evidence must use no-author-native basis",
+            )
+        else:
+            require(
+                capability != "not-applicable",
+                f"{target['id']} author-native {stage} stage may not use not-applicable capability",
+            )
+            if not substituted:
+                require(
+                    basis == "author-native",
+                    f"{target['id']} native-selected {stage} stage must use author-native basis",
+                )
+                require(
+                    capability == "verified",
+                    f"{target['id']} native-selected {stage} stage requires a verified smoke test",
+                )
+            elif material:
+                objective_basis = basis in {"objective-portability", "objective-independent"}
+                if capability in {"available-untested", "prerequisites-present", "verified"}:
+                    require(
+                        objective_basis,
+                        f"{target['id']} may not substitute a claim-relevant {stage} stage while "
+                        f"author-native capability is {capability}",
+                    )
+                else:
+                    require(
+                        objective_basis or basis == "declared-fallback",
+                        f"{target['id']} claim-relevant {stage} substitute requires an objective reason or declared fallback",
+                    )
+                require(
+                    bool(evidence_boundary),
+                    f"{target['id']} claim-relevant {stage} substitute requires evidenceBoundary",
+                )
+            else:
+                require(
+                    basis in {"objective-portability", "objective-independent", "declared-fallback"},
+                    f"{target['id']} non-material {stage} substitute needs a valid selection basis",
+                )
+        if not (material and substituted):
+            require(
+                evidence_boundary is None,
+                f"{target['id']} {stage} may declare evidenceBoundary only for a claim-relevant substitution",
+            )
+        decisions.append({
+            "stage": stage,
+            "materialToClaim": material,
+            "authorNative": author_native,
+            "selected": selected,
+            "nativeCapability": capability,
+            "selectionBasis": basis,
+            "reason": reason,
+            "evidenceBoundary": evidence_boundary,
+        })
+    if scientific_execution:
+        require(
+            any(decision["materialToClaim"] for decision in decisions),
+            f"{target['id']} scientific execution requires at least one claim-relevant stage",
+        )
+    return decisions
+
+
 def assemble(plan_path: Path, output_root: Path) -> Path:
     plan_path = plan_path.expanduser()
     if not plan_path.is_absolute():
@@ -688,7 +1068,7 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
         artifact, shared_ref, display = _parse_link(
             raw,
             plan_path=plan_path,
-            destination_parent=Path("figures") / target["id"],
+            destination_parent=target["destinationParent"],
             label=label,
             distribution=distribution,
         )
@@ -698,6 +1078,22 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
         pending_refs.append((target, field, shared_ref or "", display))
         return ArtifactLink(Path("shared") / (shared_ref or ""), display)
 
+    def parse_target_supporting(
+        raw: object, target: dict, label: str
+    ) -> ArtifactLink:
+        artifact, shared_ref, display, purpose = _parse_supporting_link(
+            raw,
+            plan_path=plan_path,
+            destination_parent=target["destinationParent"],
+            label=label,
+            distribution=distribution,
+        )
+        if artifact is not None:
+            copies.append(artifact)
+            return ArtifactLink(artifact.destination, artifact.label, purpose)
+        pending_refs.append((target, "supporting-result", shared_ref or "", display))
+        return ArtifactLink(Path("shared") / (shared_ref or ""), display, purpose)
+
     for index, raw_target in enumerate(plan["targets"]):
         label = f"targets[{index}]"
         require(isinstance(raw_target, dict), f"{label} must be an object")
@@ -705,16 +1101,16 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
             raw_target,
             {
                 "id", "title", "kind", "operationalStatus", "validationStatus",
-                "claimStatus", "route", "validationBasis", "materialAssumptions",
+                "claimStatus", "route", "stageDecisions", "validationBasis", "materialAssumptions",
                 "blocker", "conclusion", "mainResult", "reference",
-                "implementation", "parameters", "evidence", "dependencies",
+                "rerunFiles", "supportingResults",
                 "dependencyNote", "rerunArgv", "limitations", "rights",
             },
             {
                 "id", "title", "kind", "operationalStatus", "validationStatus",
-                "claimStatus", "route", "validationBasis", "materialAssumptions",
-                "conclusion", "mainResult", "implementation", "parameters",
-                "evidence", "dependencies", "limitations", "rights",
+                "claimStatus", "route", "stageDecisions", "validationBasis", "materialAssumptions",
+                "conclusion", "mainResult", "rerunFiles", "supportingResults",
+                "limitations", "rights",
             },
             label,
         )
@@ -738,10 +1134,13 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
             "materialAssumptions": _concise_list(
                 raw_target["materialAssumptions"], f"{label}.materialAssumptions"
             ),
-            "limitations": _list_of_lines(raw_target["limitations"], f"{label}.limitations"),
+            "limitations": _concise_list(raw_target["limitations"], f"{label}.limitations"),
             "rights": _human_line(raw_target["rights"], f"{label}.rights", 1000),
             "dependencyNote": None,
             "blocker": None,
+            "destinationParent": (
+                Path() if len(plan["targets"]) == 1 else Path("figures") / target_id
+            ),
         }
         require(target["kind"] in TARGET_KINDS, f"unsupported target kind: {target['kind']}")
         require(target["route"] in ROUTES, f"unsupported route for {target_id}: {target['route']}")
@@ -750,6 +1149,9 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
         require(target["claimStatus"] in CLAIM_STATUSES, f"unsupported claim status for {target_id}")
         _validate_statuses(target)
         _validate_route(target)
+        target["stageDecisions"] = _validate_stage_decisions(
+            raw_target["stageDecisions"], target, f"{label}.stageDecisions"
+        )
         if raw_target.get("blocker") is not None:
             target["blocker"] = _human_line(raw_target["blocker"], f"{label}.blocker", 500)
         if target["validationStatus"] == "not-run":
@@ -773,34 +1175,42 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
         target["referenceLink"] = None
         if raw_target.get("reference") is not None:
             target["referenceLink"] = parse_target_artifact(raw_target["reference"], target, "reference", f"{label}.reference")
-        for field, output_key in (
-            ("implementation", "implementationLinks"),
-            ("parameters", "parameterLinks"),
-            ("evidence", "evidenceLinks"),
-            ("dependencies", "dependencyLinks"),
-        ):
-            raw_items = raw_target[field]
-            require(isinstance(raw_items, list), f"{label}.{field} must be a list")
-            require(len(raw_items) <= 64, f"{label}.{field} has too many entries")
-            target[output_key] = [
-                parse_target_artifact(item, target, field, f"{label}.{field}[{item_index}]")
-                for item_index, item in enumerate(raw_items)
-            ]
+        rerun_items = raw_target["rerunFiles"]
+        require(isinstance(rerun_items, list), f"{label}.rerunFiles must be a list")
+        require(len(rerun_items) <= 64, f"{label}.rerunFiles has too many entries")
+        target["rerunLinks"] = [
+            parse_target_artifact(item, target, "rerun-file", f"{label}.rerunFiles[{item_index}]")
+            for item_index, item in enumerate(rerun_items)
+        ]
+        supporting_items = raw_target["supportingResults"]
+        require(isinstance(supporting_items, list), f"{label}.supportingResults must be a list")
+        require(len(supporting_items) <= 16, f"{label}.supportingResults has too many entries")
+        target["supportingLinks"] = [
+            parse_target_supporting(item, target, f"{label}.supportingResults[{item_index}]")
+            for item_index, item in enumerate(supporting_items)
+        ]
         rerun_raw = raw_target.get("rerunArgv")
         target["rerunArgv"] = [] if rerun_raw is None else _parse_rerun(rerun_raw, f"{label}.rerunArgv")
         if raw_target.get("dependencyNote") is not None:
             target["dependencyNote"] = _human_line(raw_target["dependencyNote"], f"{label}.dependencyNote", 500)
         require(
-            bool(target["implementationLinks"]) == bool(target["rerunArgv"]),
-            f"{target_id} must provide implementation and exactly one rerun argv together",
+            bool(target["rerunLinks"]) == bool(target["rerunArgv"]),
+            f"{target_id} must provide rerun files and exactly one rerun argv together",
         )
-        if target["implementationLinks"]:
+        if target["rerunLinks"]:
             require(
-                bool(target["dependencyLinks"]) or bool(target["dependencyNote"]),
-                f"{target_id} executable target requires dependency artifacts or dependencyNote",
+                bool(target["dependencyNote"]),
+                f"{target_id} executable target requires one concise dependencyNote",
             )
+        else:
+            require(
+                target["dependencyNote"] is None,
+                f"{target_id} may not declare dependencies without rerun files",
+            )
+        _validate_rerun_paths(target)
         targets.append(target)
 
+    referenced_shared = {shared_ref.casefold() for _, _, shared_ref, _ in pending_refs}
     for target, field, shared_ref, _display in pending_refs:
         shared_artifact = shared_names.get(shared_ref.casefold())
         require(shared_artifact is not None, f"{target['id']} {field} references missing shared artifact: {shared_ref}")
@@ -808,6 +1218,16 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
             shared_ref == shared_artifact.destination.name,
             f"{target['id']} {field} must match shared artifact case exactly: {shared_artifact.destination.name}",
         )
+    unused_shared = sorted(
+        artifact.destination.name
+        for key, artifact in shared_names.items()
+        if key not in referenced_shared
+    )
+    require(
+        not unused_shared,
+        "top-level shared artifacts must be referenced by at least one target: "
+        + ", ".join(unused_shared),
+    )
 
     require(len(copies) <= MAX_COPY_ARTIFACTS, "delivery contains too many copied artifacts")
     destinations: Dict[str, CopyArtifact] = {}
@@ -825,7 +1245,7 @@ def assemble(plan_path: Path, output_root: Path) -> Path:
         digests[artifact.digest] = artifact
     require(sum(item.size for item in copies) <= MAX_TOTAL_BYTES, "delivery exceeds the total size limit")
 
-    readme = _build_readme(plan, targets, shared, licenses)
+    readme = _build_readme(plan, targets, licenses)
     require(_secret_match(readme) is None, "generated README contains secret-shaped text")
 
     output_root = _checked_output_root(output_root)
