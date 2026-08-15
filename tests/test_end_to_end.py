@@ -153,6 +153,7 @@ def write_linear_work(
 
             parser = argparse.ArgumentParser()
             parser.add_argument("--config", type=Path, required=True)
+            parser.add_argument("--diagnostics", action="store_true")
             args = parser.parse_args()
             config_path = args.config.resolve()
             config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -178,26 +179,27 @@ def write_linear_work(
                 f'<text x="75" y="70">y = {slope:g}x + {intercept:g}</text></svg>\\n'
             )
             (base / config["result"]).write_text(svg, encoding="utf-8")
-            (base / config["observables"]).write_text(
-                json.dumps(
-                    {
-                        "pointCount": len(rows),
-                        "slope": slope,
-                        "intercept": intercept,
-                        "targetSha256": config["targetSha256"],
-                        "targetCaption": config["targetCaption"],
-                    },
-                    indent=2,
-                    sort_keys=True,
-                ) + "\\n",
-                encoding="utf-8",
-            )
+            if args.diagnostics:
+                (base / config["observables"]).write_text(
+                    json.dumps(
+                        {
+                            "pointCount": len(rows),
+                            "slope": slope,
+                            "intercept": intercept,
+                            "targetSha256": config["targetSha256"],
+                            "targetCaption": config["targetCaption"],
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    ) + "\\n",
+                    encoding="utf-8",
+                )
             '''
         ),
         encoding="utf-8",
     )
     executed = subprocess.run(
-        [sys.executable, str(code_path), "--config", str(config_path)],
+        [sys.executable, str(code_path), "--config", str(config_path), "--diagnostics"],
         cwd=work,
         text=True,
         capture_output=True,
@@ -293,14 +295,13 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
             (transient / "logs" / "raw.log").write_text("internal trace\n", encoding="utf-8")
 
             plan_path = transient / "delivery-plan.json"
-            reference_source = (targets / target["normalizedPath"]).relative_to(transient).as_posix()
             plan = {
-                "schemaVersion": "scirepro.delivery-plan/v3",
+                "schemaVersion": "scirepro.delivery-plan/v4",
                 "title": "Generic linear-response reproduction",
                 "slug": "generic-linear",
                 "distribution": "local-private",
                 "conclusion": "The declared linear response is reproduced and independently checked.",
-                "shared": [],
+                "common": [],
                 "licenses": [],
                 "targets": [
                     {
@@ -327,18 +328,15 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
                         "materialAssumptions": [],
                         "conclusion": "Five raw points reproduce y = 2x + 1 exactly.",
                         "mainResult": artifact("work/result.svg", "result.svg", label="Reproduced response"),
-                        "reference": artifact(
-                            reference_source,
-                            "reference.png",
-                            rights="local-only",
-                            label="Acquired paper target",
-                        ),
-                        "rerunFiles": [
-                            artifact("work/reproduce.py", "reproduce.py"),
-                            artifact("work/config.json", "config.json"),
-                            artifact("work/series.csv", "series.csv", label="Raw series"),
+                        "sourceFiles": [artifact("work/reproduce.py", "reproduce.py")],
+                        "configFiles": [artifact("work/config.json", "config.json")],
+                        "inputFiles": [
+                            artifact("work/series.csv", "series.csv", label="Raw series")
                         ],
-                        "supportingResults": [],
+                        "modelFiles": [],
+                        "environmentFiles": [],
+                        "requestedExtras": [],
+                        "entrypoint": "reproduce.py",
                         "dependencyNote": "Python standard library only.",
                         "rerunArgv": [
                             "python3",
@@ -346,6 +344,7 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
                             "--config",
                             "config.json",
                         ],
+                        "rerunOutputs": ["result.svg"],
                         "limitations": ["This fixture tests a declared deterministic model."],
                         "rights": "The generated fixture and output are local test artifacts.",
                     }
@@ -362,7 +361,6 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
                 {
                     "README.md",
                     "config.json",
-                    "reference.png",
                     "reproduce.py",
                     "result.svg",
                     "series.csv",
@@ -379,11 +377,12 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
             self.assertFalse((delivery / "observables.json").exists())
 
             readme = (delivery / "README.md").read_text(encoding="utf-8")
-            self.assertIn("The declared linear response is reproduced", readme)
-            self.assertIn("original/official case recomputation", readme)
+            self.assertIn("Five raw points reproduce y = 2x + 1 exactly", readme)
+            self.assertNotIn("**Method:**", readme)
             self.assertNotIn("`direct-recompute`", readme)
             self.assertNotIn("| Target | Result | Outcome |", readme)
-            self.assertIn("Five raw points independently yielded slope 2 and intercept 1.", readme)
+            self.assertNotIn("Five raw points independently yielded slope 2 and intercept 1.", readme)
+            self.assertIn("![Reproduced response](result.svg)", readme)
             self.assertIn("python3 reproduce.py --config config.json", readme)
             self.assertNotIn(str(root), readme)
             assert_customer_links(self, delivery)
@@ -398,6 +397,7 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
             )
             self.assertEqual(rerun.returncode, 0, rerun.stderr)
             self.assertEqual(sha256(target_dir / "result.svg"), result_digest)
+            self.assertFalse((delivery / "observables.json").exists())
 
     def test_mixed_image_derived_and_semantic_outputs_stay_concise(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -417,7 +417,7 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
             write_json(
                 plan_path,
                 {
-                    "schemaVersion": "scirepro.delivery-plan/v3",
+                    "schemaVersion": "scirepro.delivery-plan/v4",
                     "title": "Mixed figure reproduction",
                     "slug": "mixed-figures",
                     "distribution": "local-private",
@@ -436,8 +436,12 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
                             "materialAssumptions": ["The fixture uses arbitrary axis scaling."],
                             "conclusion": "The declared trend is present.",
                             "mainResult": artifact("work/curve.svg", "result.svg"),
-                            "rerunFiles": [],
-                            "supportingResults": [],
+                            "sourceFiles": [],
+                            "configFiles": [],
+                            "inputFiles": [],
+                            "modelFiles": [],
+                            "environmentFiles": [],
+                            "requestedExtras": [],
                             "limitations": [],
                             "rights": "Generated fixture.",
                         },
@@ -456,8 +460,12 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
                             "materialAssumptions": [],
                             "conclusion": "The editable topology and preview are delivered.",
                             "mainResult": artifact("work/editable.pptx", "editable.pptx"),
-                            "rerunFiles": [],
-                            "supportingResults": [
+                            "sourceFiles": [],
+                            "configFiles": [],
+                            "inputFiles": [],
+                            "modelFiles": [],
+                            "environmentFiles": [],
+                            "requestedExtras": [
                                 artifact(
                                     "work/preview.png",
                                     "preview.png",
@@ -474,22 +482,22 @@ class ScientificWorkflowE2ETests(unittest.TestCase):
             delivery = run_assembler(plan_path, output_root)
             self.assertEqual([item.name for item in output_root.iterdir()], [delivery.name])
             self.assertEqual(
-                {path.name for path in (delivery / "figures").iterdir()},
+                {path.name for path in delivery.iterdir() if path.is_dir()},
                 {"fig-01", "fig-02"},
             )
             self.assertEqual(
-                {path.name for path in (delivery / "figures" / "fig-02").iterdir()},
+                {path.name for path in (delivery / "fig-02").iterdir()},
                 {"editable.pptx", "preview.png"},
             )
             self.assertFalse(any(path.name == "build.mjs" for path in delivery.rglob("*")))
             readme = (delivery / "README.md").read_text(encoding="utf-8")
             self.assertIn("image-derived reconstruction", readme)
-            self.assertIn("editable schematic reconstruction", readme)
+            self.assertIn("editable reconstruction of the supplied schematic", readme)
             self.assertNotIn("`image-derived`", readme)
             self.assertNotIn("`semantic-diagram`", readme)
             self.assertNotIn("`image-derived-reconstruction`", readme)
             self.assertNotIn("`semantic-diagram-handoff`", readme)
-            self.assertIn("The visible decreasing geometry was checked.", readme)
+            self.assertNotIn("The visible decreasing geometry was checked.", readme)
             self.assertIn("The fixture uses arbitrary axis scaling.", readme)
             self.assertNotIn("`not-applicable`", readme)
             assert_customer_links(self, delivery)
@@ -518,6 +526,7 @@ class MechanismAssumptionE2ETests(unittest.TestCase):
 
                     parser = argparse.ArgumentParser()
                     parser.add_argument("--config", type=Path, required=True)
+                    parser.add_argument("--diagnostics", action="store_true")
                     args = parser.parse_args()
                     config_path = args.config.resolve()
                     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -537,21 +546,25 @@ class MechanismAssumptionE2ETests(unittest.TestCase):
                         '</svg>\\n'
                     )
                     (base / config["result"]).write_text(svg, encoding="utf-8")
-                    (base / config["observables"]).write_text(
-                        json.dumps(
-                            {"monotonic": monotonic, "boundedBelowAsymptote": bounded},
-                            indent=2,
-                            sort_keys=True,
-                        ) + "\\n",
-                        encoding="utf-8",
-                    )
+                    if args.diagnostics:
+                        (base / config["observables"]).write_text(
+                            json.dumps(
+                                {"monotonic": monotonic, "boundedBelowAsymptote": bounded},
+                                indent=2,
+                                sort_keys=True,
+                            ) + "\\n",
+                            encoding="utf-8",
+                        )
                     '''
                 ),
                 encoding="utf-8",
             )
             command = ["python3", "reproduce.py", "--config", "config.json"]
             initial = subprocess.run(
-                [sys.executable, str(work / "reproduce.py"), "--config", str(work / "config.json")],
+                [
+                    sys.executable, str(work / "reproduce.py"), "--config",
+                    str(work / "config.json"), "--diagnostics",
+                ],
                 cwd=root,
                 text=True,
                 capture_output=True,
@@ -565,7 +578,7 @@ class MechanismAssumptionE2ETests(unittest.TestCase):
             write_json(
                 plan_path,
                 {
-                    "schemaVersion": "scirepro.delivery-plan/v3",
+                    "schemaVersion": "scirepro.delivery-plan/v4",
                     "title": "Generic saturating-response mechanism reproduction",
                     "slug": "generic-mechanism",
                     "distribution": "shareable",
@@ -597,13 +610,16 @@ class MechanismAssumptionE2ETests(unittest.TestCase):
                             ],
                             "conclusion": "The narrow monotonic-saturation claim passes without pointwise replay.",
                             "mainResult": artifact("work/result.svg", "result.svg"),
-                            "rerunFiles": [
-                                artifact("work/reproduce.py", "reproduce.py"),
-                                artifact("work/config.json", "config.json"),
-                            ],
-                            "supportingResults": [],
+                            "sourceFiles": [artifact("work/reproduce.py", "reproduce.py")],
+                            "configFiles": [artifact("work/config.json", "config.json")],
+                            "inputFiles": [],
+                            "modelFiles": [],
+                            "environmentFiles": [],
+                            "requestedExtras": [],
+                            "entrypoint": "reproduce.py",
                             "dependencyNote": "Python standard library only.",
                             "rerunArgv": command,
+                            "rerunOutputs": ["result.svg"],
                             "limitations": ["The unpublished original trace was not treated as an acceptance target."],
                             "rights": "All fixture artifacts are generated and shareable.",
                         }
@@ -615,13 +631,14 @@ class MechanismAssumptionE2ETests(unittest.TestCase):
             self.assertIn("mechanism-level reproduction", readme)
             self.assertNotIn("`mechanism-reproduction`", readme)
             self.assertIn("time constant is fixed at 2.0", readme)
-            self.assertIn("All consecutive responses increase", readme)
+            self.assertNotIn("All consecutive responses increase", readme)
             self.assertFalse((delivery / "observables.json").exists())
             self.assertFalse(any("sensitivity" in path.name.casefold() for path in delivery.rglob("*")))
             before = sha256(delivery / "result.svg")
             rerun = subprocess.run(command, cwd=delivery, text=True, capture_output=True)
             self.assertEqual(rerun.returncode, 0, rerun.stderr)
             self.assertEqual(sha256(delivery / "result.svg"), before)
+            self.assertFalse((delivery / "observables.json").exists())
             assert_customer_links(self, delivery)
             assert_no_internal_artifacts(self, delivery)
 
